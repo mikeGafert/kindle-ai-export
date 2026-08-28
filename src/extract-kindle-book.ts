@@ -679,6 +679,45 @@ async function main(asin: string) {
     }
   }
 
+  // The reader sends toc.json and location_map.json in separate render packages
+  // and in no guaranteed order; the response handler can only pair them when
+  // both have arrived. Everything is on disk by now, so read whatever is still
+  // missing straight from the extracted packages.
+  if (!hasBookMetadata()) {
+    const renderRoot = path.join(userDataDir, 'render')
+    const renderDirs = await fs.readdir(renderRoot).catch(() => [])
+
+    for (const dir of renderDirs) {
+      const renderDir = path.join(renderRoot, dir)
+
+      if (!result.locationMap) {
+        const locationMap = await tryReadJsonFile<AmazonRenderLocationMap>(
+          path.join(renderDir, 'location_map.json')
+        )
+        if (locationMap) {
+          result.locationMap = locationMap
+          for (const navUnit of result.locationMap.navigationUnit ?? []) {
+            const page = Number.parseInt(navUnit.label, 10)
+            if (!Number.isNaN(page)) navUnit.page = page
+          }
+        }
+      }
+
+      if (!result.toc?.length) {
+        const rawToc = await tryReadJsonFile<AmazonRenderToc>(
+          path.join(renderDir, 'toc.json')
+        )
+        if (rawToc?.length) {
+          result.toc = rawToc.flatMap((item) => getTocItems(item, { depth: 0 }))
+        }
+      }
+    }
+
+    if (hasBookMetadata()) {
+      console.warn('recovered book metadata from the extracted render packages')
+    }
+  }
+
   if (!hasBookMetadata()) {
     console.warn('missing book metadata:', {
       meta: !!result.meta,
@@ -703,7 +742,16 @@ async function main(asin: string) {
     },
     -1
   )
-  assert(result.nav.totalNumPages > 0, 'parsed book nav has no pages')
+  // Books without a print edition ship an empty navigation unit — they have no
+  // page numbers at all and are read by position instead, so this is not fatal.
+  const hasPageNumbers = result.nav.totalNumPages > 0
+  if (!hasPageNumbers) {
+    console.warn(
+      'this book has no page navigation; reading it by position instead'
+    )
+    result.nav.totalNumPages = 0
+  }
+
   result.nav.startContentPage = getPageForPosition(
     result.nav.startContentPosition
   )
@@ -720,12 +768,15 @@ async function main(asin: string) {
     parsedToc.firstPostContentPageTocItem?.page ?? result.nav.totalNumPages,
     result.nav.totalNumPages
   )
-  assert(result.nav.totalNumContentPages > 0, 'No content pages found')
+  assert(
+    !hasPageNumbers || result.nav.totalNumContentPages > 0,
+    'No content pages found'
+  )
 
   // Decide up front whether this book reports pages or Kindle positions; the
   // whole extraction loop keys off that.
   const initialProgress = await getProgress()
-  const usePositions = initialProgress?.unit === 'location'
+  const usePositions = !hasPageNumbers || initialProgress?.unit === 'location'
   // Note the footer's position counter runs on its own scale ("Position 1 of
   // 1765"), which is unrelated to the internal position ids in the metadata
   // (0…219369) — so the end marker has to come from the footer as well.
