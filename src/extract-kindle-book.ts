@@ -839,6 +839,9 @@ async function main(asin: string) {
   })
 
   let done = false
+  // Set when the run stops for a reason other than reaching the end, so the
+  // book is not marked complete.
+  let aborted = false
   console.warn(
     usePositions
       ? `\nreading by position up to ${endProgressValue} ` +
@@ -1011,8 +1014,24 @@ async function main(asin: string) {
         break
       }
 
-      if (++retries >= 5) {
-        console.warn('unable to navigate to next page; breaking...', progress)
+      if (++retries >= 15) {
+        // Failing to turn the page can mean two very different things: the book
+        // ended, or the reader got stuck. Telling them apart matters — the
+        // second case leaves a half-exported book that must not count as done.
+        const nearEnd = progress.value >= progress.total * 0.98
+
+        if (nearEnd) {
+          console.warn(
+            `navigation stopped at the end of the book (${progress.unit} ${progress.value} of ${progress.total})`
+          )
+        } else {
+          console.warn(
+            `\n! navigation got stuck at ${progress.unit} ${progress.value} of ${progress.total} — ` +
+              `the export is incomplete and will be retried on the next run\n`
+          )
+          aborted = true
+        }
+
         done = true
         break
       }
@@ -1023,7 +1042,7 @@ async function main(asin: string) {
   // `done` is set when the last page was seen or navigation ran out; every
   // other exit (an empty footer, missing progress) leaves the export partial,
   // and marking those finished would silently skip them on the next run.
-  result.complete = done && result.pages.length > 0
+  result.complete = done && !aborted && result.pages.length > 0
   if (!result.complete) {
     console.warn(
       `\n! ${asin} ended early with ${result.pages.length} pages — not marking it complete`
