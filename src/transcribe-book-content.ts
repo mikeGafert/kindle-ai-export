@@ -3,10 +3,9 @@ import 'dotenv/config'
 import fs from 'node:fs/promises'
 import path from 'node:path'
 
-import Anthropic from '@anthropic-ai/sdk'
-import pMap from 'p-map'
+import { Mistral } from '@mistralai/mistralai'
 
-import type { BookMetadata, ContentChunk, TocItem } from './types'
+import type { BookMetadata, ContentChunk, PageChunk, TocItem } from './types'
 import {
   assert,
   getEnv,
@@ -16,36 +15,158 @@ import {
 } from './utils'
 
 /**
- * Anthropic model used to transcribe each page screenshot.
+ * Transcribes the page screenshots with Mistral's OCR models through the batch
+ * API, which is half the price of the synchronous endpoint.
  *
- * Defaults to `claude-sonnet-5`. `claude-haiku-4-5` is cheaper but was caught
- * inventing text on decorated title pages — it read a chapter heading that was
- * not on the page, differently on each attempt. A plausible-looking invention
- * is worse than a typo here, because nothing downstream will flag it. Use
- * `claude-opus-5` for difficult typography; override via `ANTHROPIC_MODEL`.
+ * A dedicated OCR engine is used rather than a vision LLM on purpose: an LLM
+ * reads a page *and understands it*, which makes it prone to quietly smoothing
+ * or inventing text — during testing a vision model produced a chapter heading
+ * that was not on the page at all. OCR only recognises glyphs.
  */
-const model = getEnv('ANTHROPIC_MODEL') ?? 'claude-sonnet-5'
+const model = getEnv('MISTRAL_OCR_MODEL') ?? 'mistral-ocr-3'
 
-/** `output_config.effort` is supported on the 4.6+ Opus/Sonnet/Fable families. */
-const supportsEffort = /^claude-(opus|sonnet|fable|mythos)-(5|4-[678])/.test(
-  model
-)
-
-/** Server-side refusal fallbacks are available on Opus 5 / Fable 5 / Mythos 5. */
-const supportsRefusalFallbacks = /^claude-(opus|fable|mythos)-5/.test(model)
-
-const concurrency = Number.parseInt(getEnv('TRANSCRIBE_CONCURRENCY') ?? '8', 10)
+/**
+ * Pages per batch job. The request file carries every screenshot as base64, so
+ * a whole large book in one file would run into the upload size limit.
+ */
+const batchSize = Number.parseInt(getEnv('MISTRAL_BATCH_SIZE') ?? '400', 10)
 
 /** Transcribe only the first N pages — useful for a cheap trial run. */
 const limit = Number.parseInt(getEnv('TRANSCRIBE_LIMIT') ?? '0', 10)
 
-const blankMarker = '[[BLANK]]'
+/** How long to wait for a batch job before giving up (minutes). */
+const jobTimeoutMinutes = Number.parseInt(
+  getEnv('MISTRAL_JOB_TIMEOUT_MINUTES') ?? '180',
+  10
+)
 
-const systemPrompt = `You will be given an image of a single page from an ebook. Read the text from the image and output it verbatim.
+const apiKey = getEnv('MISTRAL_API_KEY')
+assert(
+  apiKey,
+  'MISTRAL_API_KEY is required — create one at https://console.mistral.ai/api-keys'
+)
 
-Do not include any additional text, descriptions, or punctuation. Ignore any embedded images. Do not use markdown. Never describe the image or comment on what you see.
+const client = new Mistral({ apiKey })
 
-If the page contains no readable text at all, output exactly ${blankMarker} and nothing else.`
+/**
+ * Fails early with the list of models the account can actually use, instead of
+ * letting a typo surface as an opaque error once the batch is already running.
+ */
+async function assertModelAvailable() {
+  const models = await client.models.list().catch(() => undefined)
+  if (!models?.data) return // can't verify — let the batch call report it
+
+  const ids = models.data.flatMap((m) =>
+    'id' in m && typeof m.id === 'string' ? [m.id] : []
+  )
+  if (ids.includes(model)) return
+
+  const ocrModels = ids.filter((id) => id.includes('ocr')).toSorted()
+  throw new Error(
+    `Model "${model}" is not available for this account.\n` +
+      `OCR models you can use: ${ocrModels.join(', ') || '(none found)'}\n` +
+      `Set MISTRAL_OCR_MODEL in .env to one of them.`
+  )
+}
+
+/** One JSONL line per page, in the raw (snake_case) shape the API expects. */
+async function buildBatchFile(pages: PageChunk[]): Promise<Buffer> {
+  const lines: string[] = []
+
+  for (const pageChunk of pages) {
+    const image = await fs.readFile(pageChunk.screenshot)
+    lines.push(
+      JSON.stringify({
+        custom_id: `${pageChunk.index}`,
+        body: {
+          document: {
+            type: 'image_url',
+            image_url: `data:image/png;base64,${image.toString('base64')}`
+          }
+        }
+      })
+    )
+  }
+
+  return Buffer.from(lines.join('\n') + '\n', 'utf8')
+}
+
+async function runBatch(
+  pages: PageChunk[],
+  label: string
+): Promise<Map<number, string>> {
+  const content = await buildBatchFile(pages)
+  console.log(
+    `  ${label}: uploading ${pages.length} pages (${(content.length / 1024 / 1024).toFixed(1)} MB)`
+  )
+
+  const inputFile = await client.files.upload({
+    file: { fileName: `${label}.jsonl`, content },
+    purpose: 'batch'
+  })
+
+  const created = await client.batch.jobs.create({
+    inputFiles: [inputFile.id],
+    model,
+    endpoint: '/v1/ocr',
+    timeoutHours: 24
+  })
+
+  console.log(`  ${label}: job ${created.id} submitted, waiting...`)
+
+  const deadline = Date.now() + jobTimeoutMinutes * 60_000
+  let job = created
+
+  while (job.status === 'QUEUED' || job.status === 'RUNNING') {
+    if (Date.now() > deadline) {
+      throw new Error(
+        `batch job ${job.id} still ${job.status} after ${jobTimeoutMinutes} minutes`
+      )
+    }
+
+    await new Promise((resolve) => setTimeout(resolve, 10_000))
+    job = await client.batch.jobs.get({ jobId: created.id })
+  }
+
+  if (job.status !== 'SUCCESS') {
+    throw new Error(`batch job ${job.id} ended with status ${job.status}`)
+  }
+
+  assert(job.outputFile, `batch job ${job.id} produced no output file`)
+  console.log(
+    `  ${label}: done (${job.succeededRequests ?? 0} ok, ${job.failedRequests ?? 0} failed)`
+  )
+
+  const download = await client.files.download({ fileId: job.outputFile })
+  const raw = await new Response(download).text()
+
+  const texts = new Map<number, string>()
+
+  for (const line of raw.split('\n')) {
+    if (!line.trim()) continue
+
+    const entry: any = JSON.parse(line)
+    const index = Number.parseInt(entry.custom_id, 10)
+
+    if (entry.error || entry.response?.status_code !== 200) {
+      console.warn(
+        `  ! page index ${index} failed:`,
+        JSON.stringify(entry.error ?? entry.response?.status_code)
+      )
+      continue
+    }
+
+    // One screenshot is one page, so the response carries a single page entry.
+    const markdown: string = (entry.response.body.pages ?? [])
+      .map((p: { markdown?: string }) => p.markdown ?? '')
+      .join('\n')
+      .trim()
+
+    texts.set(index, markdown)
+  }
+
+  return texts
+}
 
 async function main(asin: string) {
   const outDir = path.join('out', asin)
@@ -63,21 +184,14 @@ async function main(asin: string) {
     `${asin} was not extracted completely — re-run the extraction for it first`
   )
   assert(metadata.pages?.length, 'no page screenshots found')
-  assert(metadata.toc?.length, 'invalid book metadata: missing toc')
 
-  const pageToTocItemMap = metadata.toc.reduce(
+  const pageToTocItemMap = (metadata.toc ?? []).reduce(
     (acc, tocItem) => {
-      if (tocItem.page !== undefined) {
-        acc[tocItem.page] = tocItem
-      }
+      if (tocItem.page !== undefined) acc[tocItem.page] = tocItem
       return acc
     },
     {} as Record<number, TocItem>
   )
-
-  // Credentials resolve from ANTHROPIC_API_KEY, ANTHROPIC_AUTH_TOKEN or an
-  // `ant auth login` profile.
-  const client = new Anthropic({ maxRetries: 5 })
 
   const pages = limit > 0 ? metadata.pages.slice(0, limit) : metadata.pages
   if (limit > 0) {
@@ -86,120 +200,47 @@ async function main(asin: string) {
     )
   }
 
-  const content: ContentChunk[] = (
-    await pMap(
-      pages,
-      async (pageChunk, pageChunkIndex) => {
-        const { screenshot, index, page } = pageChunk
-        const screenshotBuffer = await fs.readFile(screenshot)
-        // NOTE: Anthropic expects bare base64 — no `data:image/png;base64,` prefix.
-        const screenshotBase64 = screenshotBuffer.toString('base64')
+  const texts = new Map<number, string>()
 
-        try {
-          const maxRetries = 5
-          let retries = 0
+  for (let offset = 0; offset < pages.length; offset += batchSize) {
+    const slice = pages.slice(offset, offset + batchSize)
+    const label = `${asin} ${offset + 1}-${offset + slice.length}`
+    const result = await runBatch(slice, label)
+    for (const [index, text] of result) texts.set(index, text)
+  }
 
-          do {
-            const res = await client.beta.messages.create({
-              model,
-              max_tokens: 8192,
-              system: systemPrompt,
-              ...(supportsEffort
-                ? { output_config: { effort: 'low' as const } }
-                : {}),
-              ...(supportsRefusalFallbacks
-                ? {
-                    betas: ['server-side-fallback-2026-07-01'],
-                    fallbacks: 'default' as const
-                  }
-                : {}),
-              messages: [
-                {
-                  role: 'user',
-                  content: [
-                    {
-                      type: 'image',
-                      source: {
-                        type: 'base64',
-                        media_type: 'image/png',
-                        data: screenshotBase64
-                      }
-                    }
-                  ]
-                }
-              ]
-            })
+  const content: ContentChunk[] = []
 
-            ++retries
+  for (const [i, pageChunk] of pages.entries()) {
+    const text = texts.get(pageChunk.index)
+    if (text === undefined) continue
 
-            if (res.stop_reason === 'refusal') {
-              // The model declined this page (safety classifier). Retrying with
-              // a nudged prompt would be an attempt to work around that, so we
-              // surface it instead and let the page be re-run manually.
-              throw new Error(
-                `Model refused to transcribe page ${page} (${screenshot}): ${
-                  res.stop_details?.explanation ?? 'no explanation'
-                }`
-              )
-            }
+    let cleaned = text
+      .replace(/^\s*\d+\s*$\n+/m, '')
+      .replaceAll(/^\s*/gm, '')
+      .replaceAll(/\s*$/gm, '')
 
-            const rawText = res.content
-              .flatMap((block) => (block.type === 'text' ? [block.text] : []))
-              .join('\n')
+    // Drop a chapter heading that the reader repeats at the top of the page it
+    // starts on; the TOC already carries it.
+    const prevPageChunk = pages[i - 1]
+    if (prevPageChunk && prevPageChunk.page !== pageChunk.page) {
+      const tocItem = pageToTocItemMap[pageChunk.page]
+      if (tocItem) {
+        cleaned = cleaned.replace(
+          // eslint-disable-next-line security/detect-non-literal-regexp
+          new RegExp(`^${tocItem.label}\\s*`, 'i'),
+          ''
+        )
+      }
+    }
 
-            // A deliberately blank page is a valid result, not a failed attempt.
-            const isBlank = rawText.trim() === blankMarker
-
-            let text = isBlank
-              ? ''
-              : rawText
-                  .replace(/^\s*\d+\s*$\n+/m, '')
-                  .replaceAll(/^\s*/gm, '')
-                  .replaceAll(/\s*$/gm, '')
-
-            if (!text && !isBlank) {
-              if (retries >= maxRetries) {
-                throw new Error(
-                  `Empty transcription after ${retries} attempts for page ${page} (${screenshot})`
-                )
-              }
-
-              console.warn('retrying empty transcription...', {
-                index,
-                screenshot
-              })
-              continue
-            }
-
-            const prevPageChunk = metadata.pages[pageChunkIndex - 1]
-            if (prevPageChunk && prevPageChunk.page !== page) {
-              const tocItem = pageToTocItemMap[page]
-              if (tocItem) {
-                text = text.replace(
-                  // eslint-disable-next-line security/detect-non-literal-regexp
-                  new RegExp(`^${tocItem.label}\\s*`, 'i'),
-                  ''
-                )
-              }
-            }
-
-            const result: ContentChunk = {
-              index,
-              page,
-              text,
-              screenshot
-            }
-            console.log(result)
-
-            return result
-          } while (true)
-        } catch (err) {
-          console.error(`error processing image ${index} (${screenshot})`, err)
-        }
-      },
-      { concurrency }
-    )
-  ).filter(Boolean)
+    content.push({
+      index: pageChunk.index,
+      page: pageChunk.page,
+      text: cleaned,
+      screenshot: pageChunk.screenshot
+    })
+  }
 
   const contentPath = path.join(outDir, 'content.json')
   await fs.writeFile(contentPath, JSON.stringify(content, null, 2))
@@ -207,14 +248,6 @@ async function main(asin: string) {
     `\ntranscribed ${content.length} of ${pages.length} pages -> ${contentPath}`
   )
 }
-
-const asins = parseAsins(getEnv('ASIN'))
-assert(
-  asins.length,
-  'ASIN is required (single value, comma-separated list or JSON array)'
-)
-
-let failures = 0
 
 /**
  * Transcription costs money per page, so a book that already has a complete
@@ -232,9 +265,20 @@ async function isAlreadyTranscribed(asin: string): Promise<boolean> {
     path.join(outDir, 'content.json')
   )
 
-  // Allow for the odd page the model refused or failed on.
+  // Allow for the odd page the engine could not read.
   return !!content && content.length >= metadata.pages.length - 5
 }
+
+const asins = parseAsins(getEnv('ASIN'))
+assert(
+  asins.length,
+  'ASIN is required (single value, comma-separated list or JSON array)'
+)
+
+await assertModelAvailable()
+console.log(`transcribing with ${model} via the batch API\n`)
+
+let failures = 0
 
 for (const [i, asin] of asins.entries()) {
   if (asins.length > 1) {
