@@ -6,6 +6,7 @@ import path from 'node:path'
 import type { SetRequired } from 'type-fest'
 import { input } from '@inquirer/prompts'
 import delay from 'delay'
+import * as OTPAuth from 'otpauth'
 import pRace from 'p-race'
 // import { chromium } from 'playwright'
 import { chromium } from 'patchright'
@@ -46,6 +47,8 @@ async function main() {
   const asin = getEnv('ASIN')
   const amazonEmail = getEnv('AMAZON_EMAIL')
   const amazonPassword = getEnv('AMAZON_PASSWORD')
+  // Optional: if set, 2FA codes are generated locally instead of being typed in.
+  const amazonTotpSecret = getEnv('AMAZON_TOTP_SECRET')
   assert(asin, 'ASIN is required')
   assert(amazonEmail, 'AMAZON_EMAIL is required')
   assert(amazonPassword, 'AMAZON_PASSWORD is required')
@@ -286,9 +289,15 @@ async function main() {
     await page.locator('input[type="submit"]').click()
 
     if (!/\/kindle-library/g.test(new URL(page.url()).pathname)) {
-      const code = await input({
-        message: '2-factor auth code?'
-      })
+      const code = amazonTotpSecret
+        ? new OTPAuth.TOTP({
+            secret: OTPAuth.Secret.fromBase32(
+              amazonTotpSecret.replaceAll(/\s+/g, '').toUpperCase()
+            )
+          }).generate()
+        : await input({
+            message: '2-factor auth code?'
+          })
 
       // Only enter 2-factor auth code if needed
       if (code) {
