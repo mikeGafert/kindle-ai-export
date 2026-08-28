@@ -924,13 +924,46 @@ if (asins.length > 1) {
 
 let failures = 0
 
+/**
+ * A book counts as done when its metadata lists pages and every screenshot it
+ * names is on disk. Lets a long multi-book run be resumed after an abort
+ * without re-doing the books that already finished.
+ */
+async function isAlreadyExtracted(asin: string): Promise<boolean> {
+  const metadata = await tryReadJsonFile<BookMetadata>(
+    path.join('out', asin, 'metadata.json')
+  )
+  if (!metadata?.pages?.length) return false
+
+  const missing = await Promise.all(
+    metadata.pages.map((p) =>
+      fs
+        .access(p.screenshot)
+        .then(() => false)
+        .catch(() => true)
+    )
+  )
+
+  return !missing.includes(true)
+}
+
 for (const [i, asin] of asins.entries()) {
   if (asins.length > 1) {
     console.log(`\n===== [${i + 1}/${asins.length}] ${asin} =====\n`)
   }
 
   try {
+    if (!getEnv('FORCE_REEXTRACT') && (await isAlreadyExtracted(asin))) {
+      console.log(
+        `${asin} already extracted, skipping (FORCE_REEXTRACT=1 to redo)`
+      )
+      continue
+    }
+
     await main(asin)
+
+    // Give Amazon a breather between books.
+    if (i < asins.length - 1) await delay(5000)
   } catch (err) {
     // One unavailable or unsupported book must not abandon the rest of the list.
     ++failures
