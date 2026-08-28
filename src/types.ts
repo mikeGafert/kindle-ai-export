@@ -1,4 +1,6 @@
 export interface BookMetadata {
+  /** Set once the extraction loop ran to the end of the book. */
+  complete?: boolean
   meta: AmazonBookMeta
   /**
    * Only present on older Kindle web readers. Amazon removed the

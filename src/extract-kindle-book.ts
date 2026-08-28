@@ -898,6 +898,9 @@ async function main(asin: string) {
     } while (true)
   } while (!done)
 
+  // Mark the book as finished so a resumed run can tell a completed export from
+  // one that was aborted midway — the page files alone cannot distinguish them.
+  result.complete = true
   await writeResultMetadata()
   console.log()
   console.log(metadataPath)
@@ -933,7 +936,7 @@ async function isAlreadyExtracted(asin: string): Promise<boolean> {
   const metadata = await tryReadJsonFile<BookMetadata>(
     path.join('out', asin, 'metadata.json')
   )
-  if (!metadata?.pages?.length) return false
+  if (!metadata?.pages?.length || !metadata.complete) return false
 
   const missing = await Promise.all(
     metadata.pages.map((p) =>
