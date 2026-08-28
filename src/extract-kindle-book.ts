@@ -59,6 +59,18 @@ async function main(asin: string) {
   const pageScreenshotsDir = path.join(outDir, 'pages')
   const metadataPath = path.join(outDir, 'metadata.json')
   await fs.mkdir(userDataDir, { recursive: true })
+
+  // A previous run may have been aborted midway. Its screenshots are numbered
+  // by index, so a shorter re-run would leave stale files behind that no longer
+  // belong to any page — clear them before starting over.
+  const previous = await tryReadJsonFile<BookMetadata>(metadataPath)
+  if (previous?.pages?.length && !previous.complete) {
+    console.warn(
+      `discarding ${previous.pages.length} pages from an incomplete earlier run of ${asin}`
+    )
+    await fs.rm(pageScreenshotsDir, { recursive: true, force: true })
+  }
+
   await fs.mkdir(pageScreenshotsDir, { recursive: true })
 
   const krRendererMainImageSelector = '#kr-renderer .kg-full-page-img img'
