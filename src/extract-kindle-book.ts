@@ -77,9 +77,14 @@ async function main() {
   }
 
   const deviceScaleFactor = 2
+  // On systems without Google Chrome, point CHROME_EXECUTABLE_PATH at a
+  // Chromium-based browser (e.g. /usr/bin/brave-browser) or set CHROME_CHANNEL
+  // to 'chromium' / 'msedge'. Defaults to the 'chrome' channel.
+  const executablePath = getEnv('CHROME_EXECUTABLE_PATH')
+  const channel = getEnv('CHROME_CHANNEL') ?? 'chrome'
   const context = await chromium.launchPersistentContext(userDataDir, {
     headless: false,
-    channel: 'chrome',
+    ...(executablePath ? { executablePath } : { channel }),
     args: [
       // hide chrome's crash restore popup
       '--hide-crash-restore-bubble',
