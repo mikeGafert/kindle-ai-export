@@ -545,6 +545,36 @@ async function main(asin: string) {
     await delay(500)
   }
 
+  /**
+   * Jumps to the very beginning of the book via the table of contents.
+   *
+   * The reader reopens a book wherever it was last read, so without this an
+   * export can silently start in the middle — and look complete afterwards.
+   * The "go to page" menu entry Amazon removed used to cover this; the first
+   * TOC entry is the remaining reliable way back to the start.
+   */
+  async function goToStartOfBook() {
+    const t = { timeout: 10_000 }
+
+    await page.locator('#reader-header').hover({ force: true, ...t })
+    await delay(300)
+    await ensureFixedHeaderUI().catch(() => {})
+
+    const tocButton = page
+      .locator('ion-button[item-i-d="top_menu_table_of_contents"]')
+      .first()
+    await tocButton.click({ force: true, ...t })
+    await delay(1500)
+
+    const firstEntry = page.locator('ion-item[role="listitem"]').first()
+    await firstEntry.click(t)
+    await delay(2500)
+
+    // Close the panel again if it stayed open.
+    await tocButton.click({ force: true, ...t }).catch(() => {})
+    await delay(500)
+  }
+
   async function getPageNav() {
     // Amazon has moved this text around; fall back to the whole footer so a
     // changed inner element does not silently yield "no page number".
@@ -827,6 +857,16 @@ async function main(asin: string) {
   // Navigate to the first content page of the book. Best-effort: if the reader
   // has no "go to page" menu entry, carry on from wherever the book is open —
   // open it on the first page manually before starting the script.
+  // Get back to the start of the book before capturing anything.
+  console.log('Navigating to the start of the book')
+  await goToStartOfBook().catch((err: unknown) =>
+    console.warn(
+      `  ! could not jump to the start via the table of contents: ${
+        err instanceof Error ? err.message : String(err)
+      }`
+    )
+  )
+
   // Skipped for position-based books, where a page number means nothing anyway.
   const skipGoToPage = usePositions || result.nav.startContentPage <= 1
   await (
@@ -1057,7 +1097,24 @@ async function main(asin: string) {
   // `done` is set when the last page was seen or navigation ran out; every
   // other exit (an empty footer, missing progress) leaves the export partial,
   // and marking those finished would silently skip them on the next run.
-  result.complete = done && !aborted && result.pages.length > 0
+  // Guard against an export that silently began in the middle of the book: the
+  // reader reopens at the last reading position, and a run starting there looks
+  // perfectly healthy otherwise.
+  const first = result.pages[0]
+  const startedAtBeginning =
+    !first ||
+    first.unit !== 'location' ||
+    first.page <= (initialProgress?.total ?? 0) * 0.1
+
+  if (!startedAtBeginning) {
+    console.warn(
+      `\n! ${asin} started at ${first.unit} ${first.page}, not at the beginning — ` +
+        `treating the export as incomplete\n`
+    )
+  }
+
+  result.complete =
+    done && !aborted && startedAtBeginning && result.pages.length > 0
   if (!result.complete) {
     console.warn(
       `\n! ${asin} ended early with ${result.pages.length} pages — not marking it complete`
