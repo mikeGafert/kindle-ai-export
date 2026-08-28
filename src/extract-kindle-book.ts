@@ -1101,10 +1101,13 @@ async function main(asin: string) {
   // reader reopens at the last reading position, and a run starting there looks
   // perfectly healthy otherwise.
   const first = result.pages[0]
+  const startScale =
+    first?.unit === 'location'
+      ? (initialProgress?.total ?? 0)
+      : result.nav.totalNumContentPages
+  // Allow a few pages of slack: some books open on page 2 or 3 legitimately.
   const startedAtBeginning =
-    !first ||
-    first.unit !== 'location' ||
-    first.page <= (initialProgress?.total ?? 0) * 0.1
+    !first || first.page <= Math.max(5, startScale * 0.1)
 
   if (!startedAtBeginning) {
     console.warn(
