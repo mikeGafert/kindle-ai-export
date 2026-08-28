@@ -938,7 +938,16 @@ async function main(asin: string) {
     // book cleanly, instead of spending 30 failing click attempts (~2.5 min) on
     // a button that cannot appear — during which the browser sometimes dies and
     // takes the whole extraction down with it, losing the completion marker.
-    if (progress.value >= progress.total) {
+    // Ask the reader itself whether another page exists. Comparing the footer's
+    // counters does not work: a position-based book ends on the page that
+    // *starts* at e.g. 4397 of 4404, so the numbers never meet and the loop
+    // would fall through to 30 failing click attempts (~2.5 min per book).
+    const hasNextPage = await page
+      .locator('.kr-chevron-container-right')
+      .isVisible()
+      .catch(() => false)
+
+    if (!hasNextPage || progress.value >= progress.total) {
       console.warn(
         `reached the end of the book (${progress.unit} ${progress.value} of ${progress.total})`
       )
@@ -989,7 +998,7 @@ async function main(asin: string) {
         break
       }
 
-      if (++retries >= 30) {
+      if (++retries >= 5) {
         console.warn('unable to navigate to next page; breaking...', progress)
         done = true
         break
