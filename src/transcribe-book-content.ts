@@ -55,6 +55,13 @@ async function main(asin: string) {
       `${metadataPath} not found — run "npx tsx src/extract-kindle-book.ts" for this book first`
     )
   })
+
+  // Transcribing a partially extracted book would spend money on an incomplete
+  // text and leave a content.json that looks finished.
+  assert(
+    metadata.complete,
+    `${asin} was not extracted completely — re-run the extraction for it first`
+  )
   assert(metadata.pages?.length, 'no page screenshots found')
   assert(metadata.toc?.length, 'invalid book metadata: missing toc')
 
