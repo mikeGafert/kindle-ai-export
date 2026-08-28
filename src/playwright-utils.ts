@@ -4,8 +4,8 @@ import { assert, deromanize } from './utils'
 
 export function parsePageNav(text: string | null): PageNav | undefined {
   {
-    // Parse normal page locations
-    const match = text?.match(/page\s+(\d+)\s+of\s+(\d+)/i)
+    // Parse normal page locations (en: "page 3 of 250", de: "Seite 3 von 250")
+    const match = text?.match(/(?:page|seite)\s+(\d+)\s+(?:of|von)\s+(\d+)/i)
     if (match) {
       const page = Number.parseInt(match?.[1]!)
       const total = Number.parseInt(match?.[2]!)
@@ -19,8 +19,10 @@ export function parsePageNav(text: string | null): PageNav | undefined {
 
   {
     // Parse locations which are not part of the main book pages
-    // (toc, copyright, title, etc)
-    const match = text?.match(/location\s+(\d+)\s+of\s+(\d+)/i)
+    // (toc, copyright, title, etc). German readers say "Position 1 von 1765".
+    const match = text?.match(
+      /(?:location|position)\s+(\d+)\s+(?:of|von)\s+(\d+)/i
+    )
     if (match) {
       const location = Number.parseInt(match?.[1]!)
       const total = Number.parseInt(match?.[2]!)
@@ -34,7 +36,9 @@ export function parsePageNav(text: string | null): PageNav | undefined {
 
   {
     // Parse locations which use roman numerals
-    const match = text?.match(/page\s+([cdilmvx]+)\s+of\s+(\d+)/i)
+    const match = text?.match(
+      /(?:page|seite)\s+([cdilmvx]+)\s+(?:of|von)\s+(\d+)/i
+    )
     if (match) {
       const location = deromanize(match?.[1]!)
       const total = Number.parseInt(match?.[2]!)

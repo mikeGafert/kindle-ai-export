@@ -91,12 +91,27 @@ async function main() {
     args: [
       // hide chrome's crash restore popup
       '--hide-crash-restore-bubble',
-      // disable chrome's password autosave popups
-      '--disable-features=PasswordAutosave',
-      // disable chrome's passkey popups
-      '--disable-features=WebAuthn',
-      // disable chrome creating 1GB temp directories on each run
-      '--disable-features=MacAppCodeSignClone'
+      '--disable-session-crashed-bubble',
+      // skip the first-run / welcome tabs and the default-browser prompt
+      '--no-first-run',
+      '--no-default-browser-check',
+      '--disable-infobars',
+      // Chromium forks (Brave, ...) otherwise open their own onboarding tabs
+      // and reward/wallet prompts on every launch.
+      '--disable-features=' +
+        [
+          // disable chrome's password autosave popups
+          'PasswordAutosave',
+          // disable chrome's passkey popups
+          'WebAuthn',
+          // disable chrome creating 1GB temp directories on each run
+          'MacAppCodeSignClone',
+          'Translate',
+          'BraveRewards',
+          'BraveWallet',
+          'BraveVPN',
+          'BraveNews'
+        ].join(',')
     ],
     ignoreDefaultArgs: [
       // disable chrome's default automation detection flag
@@ -113,7 +128,22 @@ async function main() {
     viewport: { width: 1280, height: 720 }
   })
 
+  // Chromium forks like to open onboarding tabs on launch; keep only one.
+  for (const strayPage of context.pages().slice(1)) {
+    await strayPage.close().catch(() => {})
+  }
+
   const page = context.pages()[0] ?? (await context.newPage())
+
+  // Close any tab the browser opens later on (update notes, welcome pages)
+  // so the automation always stays on the reader tab.
+  context.on('page', async (newPage) => {
+    if (newPage === page) return
+    await delay(500)
+    if (!newPage.url().includes('read.amazon.')) {
+      await newPage.close().catch(() => {})
+    }
+  })
 
   await page.route('**/*', async (route) => {
     const urlString = route.request().url()
@@ -340,38 +370,56 @@ async function main() {
 
   async function updateSettings() {
     console.log('Looking for Reader settings button')
+    // Address controls by `item-i-d` / element id rather than by aria-label or
+    // visible text: those are localized (a German reader says
+    // "Leser-Einstellungen" / "Eine Spalte"), the ids are not.
     const settingsButton = page
-      .locator(
-        'ion-button[aria-label="Reader settings"], ' +
-          'button[aria-label="Reader settings"]'
-      )
+      .locator('ion-button[item-i-d="top_menu_reader_settings"]')
       .first()
     await settingsButton.waitFor({ timeout: 30_000 })
+
+    // The top chrome auto-hides; reveal it before clicking.
+    await page.locator('#reader-header').hover({ force: true })
+    await delay(300)
+    await ensureFixedHeaderUI().catch(() => {})
+
     console.log('Clicking Reader settings')
-    await settingsButton.click()
-    await delay(500)
+    await settingsButton.click({ force: true })
+    await delay(1500)
 
     // Change font to Amazon Ember
     // My hypothesis is that this font will be easier for OCR to transcribe...
     // TODO: evaluate different fonts & settings
     console.log('Changing font to Amazon Ember')
-    await page.locator('#AmazonEmber').click()
+    await page
+      .locator('#AmazonEmber')
+      .click({ timeout: 15_000 })
+      .catch(() => console.warn('  ! font switch unavailable; keeping default'))
     await delay(200)
 
-    // Change layout to single column
+    // Change layout to single column — important for OCR, since a two-column
+    // layout makes the reading order ambiguous.
     console.log('Changing to single column layout')
     await page
-      .locator('[role="radiogroup"][aria-label$=" columns"]', {
-        hasText: 'Single Column'
-      })
-      .click()
+      .locator('#columns-1')
+      .click({ timeout: 15_000 })
+      .catch(() =>
+        console.warn('  ! single-column switch unavailable; check the layout')
+      )
     await delay(200)
 
     console.log('Closing settings')
-    await settingsButton.click()
+    await settingsButton.click({ force: true }).catch(() => {})
     await delay(500)
   }
 
+  /**
+   * Jumps to a page via the reader menu.
+   *
+   * Recent versions of the Kindle web reader no longer offer a "go to page"
+   * entry in that menu, so this can legitimately fail — callers treat it as
+   * best-effort and fall back to whatever page the reader is already on.
+   */
   async function goToPage(pageNumber: number) {
     await page.locator('#reader-header').hover({ force: true })
     await delay(200)
@@ -406,7 +454,9 @@ async function main() {
   }
 
   async function dismissPossibleAlert() {
-    const $alertNo = page.locator('ion-alert button', { hasText: 'No' })
+    const $alertNo = page.locator('ion-alert button', {
+      hasText: /^(no|nein)$/i
+    })
     if (await $alertNo.isVisible()) {
       await $alertNo.click()
     }
@@ -511,8 +561,17 @@ async function main() {
     .length
   await writeResultMetadata()
 
-  // Navigate to the first content page of the book
-  await goToPage(result.nav.startContentPage)
+  // Navigate to the first content page of the book. Best-effort: if the reader
+  // has no "go to page" menu entry, carry on from wherever the book is open —
+  // open it on the first page manually before starting the script.
+  await goToPage(result.nav.startContentPage).catch((err: unknown) => {
+    const reason = err instanceof Error ? err.message : String(err)
+    console.warn(
+      `\n! could not jump to page ${result.nav.startContentPage} automatically ` +
+        `(${reason}).\n  Continuing from the current page — make sure ` +
+        `the book is open at the beginning.\n`
+    )
+  })
 
   let done = false
   console.warn(
@@ -660,8 +719,8 @@ async function main() {
 
   if (initialPageNav?.page !== undefined) {
     console.warn(`resetting back to initial page ${initialPageNav.page}...`)
-    // Reset back to the initial page
-    await goToPage(initialPageNav.page)
+    // Reset back to the initial page (best-effort, see goToPage)
+    await goToPage(initialPageNav.page).catch(() => {})
   }
 
   await context.close()
