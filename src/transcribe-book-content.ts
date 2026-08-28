@@ -7,7 +7,7 @@ import Anthropic from '@anthropic-ai/sdk'
 import pMap from 'p-map'
 
 import type { BookMetadata, ContentChunk, TocItem } from './types'
-import { assert, getEnv, readJsonFile } from './utils'
+import { assert, getEnv, parseAsins, readJsonFile } from './utils'
 
 /**
  * Anthropic model used to transcribe each page screenshot.
@@ -28,18 +28,25 @@ const supportsRefusalFallbacks = /^claude-(opus|fable|mythos)-5/.test(model)
 
 const concurrency = Number.parseInt(getEnv('TRANSCRIBE_CONCURRENCY') ?? '8', 10)
 
+/** Transcribe only the first N pages — useful for a cheap trial run. */
+const limit = Number.parseInt(getEnv('TRANSCRIBE_LIMIT') ?? '0', 10)
+
+const blankMarker = '[[BLANK]]'
+
 const systemPrompt = `You will be given an image of a single page from an ebook. Read the text from the image and output it verbatim.
 
-Do not include any additional text, descriptions, or punctuation. Ignore any embedded images. Do not use markdown.`
+Do not include any additional text, descriptions, or punctuation. Ignore any embedded images. Do not use markdown. Never describe the image or comment on what you see.
 
-async function main() {
-  const asin = getEnv('ASIN')
-  assert(asin, 'ASIN is required')
+If the page contains no readable text at all, output exactly ${blankMarker} and nothing else.`
 
+async function main(asin: string) {
   const outDir = path.join('out', asin)
-  const metadata = await readJsonFile<BookMetadata>(
-    path.join(outDir, 'metadata.json')
-  )
+  const metadataPath = path.join(outDir, 'metadata.json')
+  const metadata = await readJsonFile<BookMetadata>(metadataPath).catch(() => {
+    throw new Error(
+      `${metadataPath} not found — run "npx tsx src/extract-kindle-book.ts" for this book first`
+    )
+  })
   assert(metadata.pages?.length, 'no page screenshots found')
   assert(metadata.toc?.length, 'invalid book metadata: missing toc')
 
@@ -57,9 +64,16 @@ async function main() {
   // `ant auth login` profile.
   const client = new Anthropic({ maxRetries: 5 })
 
+  const pages = limit > 0 ? metadata.pages.slice(0, limit) : metadata.pages
+  if (limit > 0) {
+    console.log(
+      `TRANSCRIBE_LIMIT=${limit}: only transcribing the first ${pages.length} of ${metadata.pages.length} pages`
+    )
+  }
+
   const content: ContentChunk[] = (
     await pMap(
-      metadata.pages,
+      pages,
       async (pageChunk, pageChunkIndex) => {
         const { screenshot, index, page } = pageChunk
         const screenshotBuffer = await fs.readFile(screenshot)
@@ -118,12 +132,17 @@ async function main() {
               .flatMap((block) => (block.type === 'text' ? [block.text] : []))
               .join('\n')
 
-            let text = rawText
-              .replace(/^\s*\d+\s*$\n+/m, '')
-              .replaceAll(/^\s*/gm, '')
-              .replaceAll(/\s*$/gm, '')
+            // A deliberately blank page is a valid result, not a failed attempt.
+            const isBlank = rawText.trim() === blankMarker
 
-            if (!text) {
+            let text = isBlank
+              ? ''
+              : rawText
+                  .replace(/^\s*\d+\s*$\n+/m, '')
+                  .replaceAll(/^\s*/gm, '')
+                  .replaceAll(/\s*$/gm, '')
+
+            if (!text && !isBlank) {
               if (retries >= maxRetries) {
                 throw new Error(
                   `Empty transcription after ${retries} attempts for page ${page} (${screenshot})`
@@ -167,11 +186,34 @@ async function main() {
     )
   ).filter(Boolean)
 
-  await fs.writeFile(
-    path.join(outDir, 'content.json'),
-    JSON.stringify(content, null, 2)
+  const contentPath = path.join(outDir, 'content.json')
+  await fs.writeFile(contentPath, JSON.stringify(content, null, 2))
+  console.log(
+    `\ntranscribed ${content.length} of ${pages.length} pages -> ${contentPath}`
   )
-  console.log(JSON.stringify(content, null, 2))
 }
 
-await main()
+const asins = parseAsins(getEnv('ASIN'))
+assert(
+  asins.length,
+  'ASIN is required (single value, comma-separated list or JSON array)'
+)
+
+let failures = 0
+
+for (const [i, asin] of asins.entries()) {
+  if (asins.length > 1) {
+    console.log(`\n===== [${i + 1}/${asins.length}] ${asin} =====\n`)
+  }
+
+  try {
+    await main(asin)
+  } catch (err) {
+    ++failures
+    console.error(`\n!! failed to transcribe ${asin}:`, err)
+  }
+}
+
+if (failures) {
+  throw new Error(`${failures} of ${asins.length} book(s) failed`)
+}

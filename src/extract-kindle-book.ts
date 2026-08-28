@@ -28,6 +28,7 @@ import {
   hashObject,
   normalizeAuthors,
   normalizeBookMetadata,
+  parseAsins,
   parseJsonpResponse,
   tryReadJsonFile
 } from './utils'
@@ -44,13 +45,11 @@ const urlRegexBlacklist = [
 type RENDER_METHOD = 'screenshot' | 'blob'
 const renderMethod: RENDER_METHOD = 'blob'
 
-async function main() {
-  const asin = getEnv('ASIN')
+async function main(asin: string) {
   const amazonEmail = getEnv('AMAZON_EMAIL')
   const amazonPassword = getEnv('AMAZON_PASSWORD')
   // Optional: if set, 2FA codes are generated locally instead of being typed in.
   const amazonTotpSecret = getEnv('AMAZON_TOTP_SECRET')
-  assert(asin, 'ASIN is required')
   assert(amazonEmail, 'AMAZON_EMAIL is required')
   assert(amazonPassword, 'AMAZON_PASSWORD is required')
   const asinL = asin.toLowerCase()
@@ -546,20 +545,25 @@ async function main() {
     return parsePageNav(footerText)
   }
 
-  async function debugFooter() {
-    const inner = await page
-      .locator('ion-footer ion-title')
-      .first()
-      .textContent()
-      .catch(() => '<no ion-title>')
-    const whole = await page
-      .locator('ion-footer')
-      .first()
-      .textContent()
-      .catch(() => '<no ion-footer>')
-    console.log('FOOTER ion-title:', JSON.stringify(inner))
-    console.log('FOOTER whole    :', JSON.stringify(whole?.slice(0, 120)))
-    console.log('FOOTER parsed   :', parsePageNav(whole ?? inner))
+  /**
+   * The reader's footer reports progress either in pages ("Page 3 of 250") or,
+   * for books without a print edition, in Kindle positions ("Position 1 of
+   * 1765"). Both are a monotonically increasing counter, so the extraction loop
+   * works off whichever the book offers.
+   */
+  async function getProgress(): Promise<
+    { unit: 'page' | 'location'; value: number; total: number } | undefined
+  > {
+    const nav = await getPageNav()
+    if (!nav) return undefined
+
+    if (nav.page !== undefined) {
+      return { unit: 'page', value: nav.page, total: nav.total }
+    }
+
+    if (nav.location !== undefined) {
+      return { unit: 'location', value: nav.location, total: nav.total }
+    }
   }
 
   async function ensureFixedHeaderUI() {
@@ -705,8 +709,21 @@ async function main() {
     result.nav.totalNumPages
   )
   assert(result.nav.totalNumContentPages > 0, 'No content pages found')
-  const pageNumberPaddingAmount = `${result.nav.totalNumContentPages * 2}`
-    .length
+
+  // Decide up front whether this book reports pages or Kindle positions; the
+  // whole extraction loop keys off that.
+  const initialProgress = await getProgress()
+  const usePositions = initialProgress?.unit === 'location'
+  // Note the footer's position counter runs on its own scale ("Position 1 of
+  // 1765"), which is unrelated to the internal position ids in the metadata
+  // (0…219369) — so the end marker has to come from the footer as well.
+  const endProgressValue = usePositions
+    ? (initialProgress?.total ?? Number.MAX_SAFE_INTEGER)
+    : result.nav.totalNumContentPages
+
+  const pageNumberPaddingAmount = `${
+    (usePositions ? endProgressValue : result.nav.totalNumContentPages) * 2
+  }`.length
   await writeResultMetadata()
 
   // Navigate to the first content page of the book. Best-effort: if the reader
@@ -723,26 +740,34 @@ async function main() {
 
   let done = false
   console.warn(
-    `\nreading ${result.nav.totalNumContentPages} content pages out of ${result.nav.totalNumPages} total pages...\n`
+    usePositions
+      ? `\nreading by position up to ${endProgressValue} ` +
+          `(this book has no page numbers)...\n`
+      : `\nreading ${result.nav.totalNumContentPages} content pages out of ${result.nav.totalNumPages} total pages...\n`
   )
 
-  // Loop through each page of the book
-  await debugFooter()
-
   do {
-    const pageNav = await getPageNav()
+    const progress = await getProgress()
 
-    if (pageNav?.page === undefined) {
+    if (progress === undefined) {
       console.warn(
-        `stopping: the footer reports no page number (got ${JSON.stringify(pageNav)}). ` +
-          `Enable "page in book" in the reader settings, or the book has no page numbers.`
+        'stopping: the reader footer reports neither a page nor a position'
       )
       break
     }
 
-    if (pageNav.page > result.nav.totalNumContentPages) {
+    if (progress.unit === 'page') {
+      if (progress.value > result.nav.totalNumContentPages) {
+        console.warn(
+          `stopping: reached page ${progress.value} of ${result.nav.totalNumContentPages} content pages`
+        )
+        break
+      }
+    } else if (progress.value > endProgressValue) {
+      // Position-based books stop at the end of the main content, so the index,
+      // ads and "about the author" pages are not exported.
       console.warn(
-        `stopping: reached page ${pageNav.page} of ${result.nav.totalNumContentPages} content pages`
+        `stopping: reached position ${progress.value} of ${endProgressValue}`
       )
       break
     }
@@ -777,7 +802,7 @@ async function main() {
 
       assert(
         blob,
-        `no blob found for src: ${src} (index ${index}; page ${pageNav.page})`
+        `no blob found for src: ${src} (index ${index}; ${progress.unit} ${progress.value})`
       )
 
       const rawRenderedImage = Buffer.from(blob.base64, 'base64')
@@ -798,21 +823,24 @@ async function main() {
 
     assert(
       renderedPageImageBuffer,
-      `no buffer found for src: ${src} (index ${index}; page ${pageNav.page})`
+      `no buffer found for src: ${src} (index ${index}; ${progress.unit} ${progress.value})`
     )
 
     const screenshotPath = path.join(
       pageScreenshotsDir,
       `${index}`.padStart(pageNumberPaddingAmount, '0') +
         '-' +
-        `${pageNav.page}`.padStart(pageNumberPaddingAmount, '0') +
+        `${progress.value}`.padStart(pageNumberPaddingAmount, '0') +
         '.png'
     )
 
     await fs.writeFile(screenshotPath, renderedPageImageBuffer)
     const pageChunk = {
       index,
-      page: pageNav.page,
+      // For position-based books this carries the Kindle position rather than a
+      // page number; `unit` records which one it is.
+      page: progress.value,
+      unit: progress.unit,
       screenshot: screenshotPath
     }
     result.pages.push(pageChunk)
@@ -833,7 +861,7 @@ async function main() {
           .locator('.kr-chevron-container-right')
           .click({ timeout: 5000 })
       } catch (err: any) {
-        console.warn('unable to click next page button', err.message, pageNav)
+        console.warn('unable to click next page button', err.message, progress)
         navigationTimeout = 1000
       }
 
@@ -863,7 +891,7 @@ async function main() {
       }
 
       if (++retries >= 30) {
-        console.warn('unable to navigate to next page; breaking...', pageNav)
+        console.warn('unable to navigate to next page; breaking...', progress)
         done = true
         break
       }
@@ -884,4 +912,32 @@ async function main() {
   await context.browser()?.close()
 }
 
-await main()
+const asins = parseAsins(getEnv('ASIN'))
+assert(
+  asins.length,
+  'ASIN is required (single value, comma-separated list or JSON array)'
+)
+
+if (asins.length > 1) {
+  console.log(`extracting ${asins.length} books: ${asins.join(', ')}\n`)
+}
+
+let failures = 0
+
+for (const [i, asin] of asins.entries()) {
+  if (asins.length > 1) {
+    console.log(`\n===== [${i + 1}/${asins.length}] ${asin} =====\n`)
+  }
+
+  try {
+    await main(asin)
+  } catch (err) {
+    // One unavailable or unsupported book must not abandon the rest of the list.
+    ++failures
+    console.error(`\n!! failed to extract ${asin}:`, err)
+  }
+}
+
+if (failures) {
+  throw new Error(`${failures} of ${asins.length} book(s) failed`)
+}

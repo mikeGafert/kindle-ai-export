@@ -27,7 +27,12 @@ export interface Nav {
 
 export interface PageChunk {
   index: number
+  /**
+   * Page number, or — for books without page numbers — the Kindle position.
+   * `unit` says which.
+   */
   page: number
+  unit?: 'page' | 'location'
   screenshot: string
 }
 

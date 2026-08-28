@@ -36,6 +36,37 @@ export function getEnv(name: string): string | undefined {
   }
 }
 
+/**
+ * Reads the `ASIN` env var, which may hold a single ASIN, a comma/semicolon/
+ * whitespace-separated list, or a JSON array:
+ *
+ *   ASIN=B07QLY87NH
+ *   ASIN=B07QLY87NH,B00957T6X6
+ *   ASIN=["B07QLY87NH", "B00957T6X6"]
+ */
+export function parseAsins(raw: string | undefined): string[] {
+  if (!raw?.trim()) return []
+
+  const trimmed = raw.trim()
+  let parts: string[]
+
+  if (trimmed.startsWith('[')) {
+    try {
+      const parsed: unknown = JSON.parse(trimmed)
+      parts = Array.isArray(parsed) ? parsed.map(String) : []
+    } catch {
+      throw new Error(`ASIN looks like a JSON array but is invalid: ${trimmed}`)
+    }
+  } else {
+    parts = trimmed.split(/[,;\s]+/)
+  }
+
+  const asins = parts.map((part) => part.trim()).filter(Boolean)
+
+  // Deduplicate while preserving order, so a repeated ASIN is not exported twice.
+  return [...new Set(asins)]
+}
+
 export function normalizeAuthors(rawAuthors: string[]): string[] {
   if (!rawAuthors?.length) {
     return []

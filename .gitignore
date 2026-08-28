@@ -44,3 +44,7 @@ old/
 out/
 
 .eslintcache
+
+# editor swap files
+.*.kate-swp
+*.swp
