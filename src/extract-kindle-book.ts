@@ -566,15 +566,21 @@ async function main(asin: string) {
   async function getProgress(): Promise<
     { unit: 'page' | 'location'; value: number; total: number } | undefined
   > {
-    const nav = await getPageNav()
-    if (!nav) return undefined
+    // The footer is briefly empty while a page renders. Retry a few times so a
+    // single blank reading does not end the book prematurely.
+    for (let attempt = 0; attempt < 8; ++attempt) {
+      if (attempt > 0) await delay(500)
 
-    if (nav.page !== undefined) {
-      return { unit: 'page', value: nav.page, total: nav.total }
-    }
+      const nav = await getPageNav().catch(() => undefined)
+      if (!nav) continue
 
-    if (nav.location !== undefined) {
-      return { unit: 'location', value: nav.location, total: nav.total }
+      if (nav.page !== undefined) {
+        return { unit: 'page', value: nav.page, total: nav.total }
+      }
+
+      if (nav.location !== undefined) {
+        return { unit: 'location', value: nav.location, total: nav.total }
+      }
     }
   }
 
@@ -991,9 +997,16 @@ async function main(asin: string) {
     } while (true)
   } while (!done)
 
-  // Mark the book as finished so a resumed run can tell a completed export from
-  // one that was aborted midway — the page files alone cannot distinguish them.
-  result.complete = true
+  // Only a run that actually reached the end of the book counts as complete.
+  // `done` is set when the last page was seen or navigation ran out; every
+  // other exit (an empty footer, missing progress) leaves the export partial,
+  // and marking those finished would silently skip them on the next run.
+  result.complete = done && result.pages.length > 0
+  if (!result.complete) {
+    console.warn(
+      `\n! ${asin} ended early with ${result.pages.length} pages — not marking it complete`
+    )
+  }
   await writeResultMetadata()
   console.log()
   console.log(metadataPath)
@@ -1004,8 +1017,15 @@ async function main(asin: string) {
     await goToPage(initialPageNav.page).catch(() => {})
   }
 
-  await context.close()
-  await context.browser()?.close()
+  // Closing a persistent context occasionally hangs; a stuck window must not
+  // block the remaining books.
+  await pRace<void>((signal) => [
+    (async () => {
+      await context.close()
+      await context.browser()?.close()
+    })(),
+    delay(20_000, { signal })
+  ]).catch(() => {})
 }
 
 const asins = parseAsins(getEnv('ASIN'))
