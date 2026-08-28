@@ -575,10 +575,12 @@ async function main(asin: string) {
   async function getProgress(): Promise<
     { unit: 'page' | 'location'; value: number; total: number } | undefined
   > {
-    // The footer is briefly empty while a page renders. Retry a few times so a
-    // single blank reading does not end the book prematurely.
-    for (let attempt = 0; attempt < 8; ++attempt) {
-      if (attempt > 0) await delay(500)
+    // The footer stays empty while a page renders, and noticeably longer right
+    // after the book opens. Waiting up to 30s costs nothing in the normal case
+    // (the first read succeeds) but avoids mistaking a slow start for the end
+    // of the book — which produced a zero-page export.
+    for (let attempt = 0; attempt < 30; ++attempt) {
+      if (attempt > 0) await delay(1000)
 
       const nav = await getPageNav().catch(() => undefined)
       if (!nav) continue
@@ -1012,6 +1014,19 @@ async function main(asin: string) {
 
       if (navigatedToNextPage) {
         break
+      }
+
+      // A stalled renderer usually recovers from a reload; try that once before
+      // giving up on the rest of the book.
+      if (retries === 8) {
+        console.warn(
+          'navigation stalled — reloading the reader and retrying...'
+        )
+        await page.reload({ waitUntil: 'domcontentloaded' }).catch(() => {})
+        await page
+          .waitForSelector(krRendererMainImageSelector, { timeout: 60_000 })
+          .catch(() => {})
+        await delay(3000)
       }
 
       if (++retries >= 15) {
