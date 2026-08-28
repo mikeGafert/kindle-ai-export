@@ -12,10 +12,11 @@ import { assert, getEnv, readJsonFile } from './utils'
 /**
  * Anthropic model used to transcribe each page screenshot.
  *
- * Defaults to `claude-opus-5`. For plain OCR, `claude-haiku-4-5` is far cheaper
- * and usually good enough; override via the `ANTHROPIC_MODEL` env var.
+ * Defaults to `claude-haiku-4-5`, which is by far the cheapest option for what
+ * is essentially OCR. Override via the `ANTHROPIC_MODEL` env var if a book's
+ * typography or layout needs a stronger model (e.g. `claude-opus-5`).
  */
-const model = getEnv('ANTHROPIC_MODEL') ?? 'claude-opus-5'
+const model = getEnv('ANTHROPIC_MODEL') ?? 'claude-haiku-4-5'
 
 /** `output_config.effort` is supported on the 4.6+ Opus/Sonnet/Fable families. */
 const supportsEffort = /^claude-(opus|sonnet|fable|mythos)-(5|4-[678])/.test(
