@@ -135,6 +135,17 @@ async function main() {
 
   const page = context.pages()[0] ?? (await context.newPage())
 
+  // The reader's metadata (YJmetadata.jsonp, startReading) only arrives once
+  // per cold load. With a warm cache — e.g. because the book was already open
+  // in this persistent profile — those requests never hit the network and we
+  // would never see the responses. Disable the HTTP cache for this page.
+  await context
+    .newCDPSession(page)
+    .then((client) =>
+      client.send('Network.setCacheDisabled', { cacheDisabled: true })
+    )
+    .catch(() => {})
+
   // Close any tab the browser opens later on (update notes, welcome pages)
   // so the automation always stays on the reader tab.
   context.on('page', async (newPage) => {
@@ -521,6 +532,38 @@ async function main() {
         'Main reader content may not have loaded, continuing anyway...'
       )
     })
+
+  // The book metadata arrives through background requests. If the reader
+  // restored an already-open book, they may not fire at all — wait for them and
+  // reload the page if they never show up.
+  const hasBookMetadata = () =>
+    !!(result.info && result.meta && result.toc?.length && result.locationMap)
+
+  for (let attempt = 0; attempt < 3 && !hasBookMetadata(); ++attempt) {
+    if (attempt > 0) {
+      console.warn(
+        `book metadata incomplete, reloading the reader (attempt ${attempt}/2)...`
+      )
+      await page.reload({ waitUntil: 'domcontentloaded' })
+      await page
+        .waitForSelector(krRendererMainImageSelector, { timeout: 60_000 })
+        .catch(() => {})
+    }
+
+    const deadline = Date.now() + 30_000
+    while (!hasBookMetadata() && Date.now() < deadline) {
+      await delay(250)
+    }
+  }
+
+  if (!hasBookMetadata()) {
+    console.warn('missing book metadata:', {
+      info: !!result.info,
+      meta: !!result.meta,
+      toc: result.toc?.length ?? 0,
+      locationMap: !!result.locationMap
+    })
+  }
 
   // Record the initial page navigation so we can reset back to it later
   const initialPageNav = await getPageNav()
