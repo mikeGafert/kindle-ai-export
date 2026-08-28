@@ -7,7 +7,13 @@ import Anthropic from '@anthropic-ai/sdk'
 import pMap from 'p-map'
 
 import type { BookMetadata, ContentChunk, TocItem } from './types'
-import { assert, getEnv, parseAsins, readJsonFile } from './utils'
+import {
+  assert,
+  getEnv,
+  parseAsins,
+  readJsonFile,
+  tryReadJsonFile
+} from './utils'
 
 /**
  * Anthropic model used to transcribe each page screenshot.
@@ -203,12 +209,39 @@ assert(
 
 let failures = 0
 
+/**
+ * Transcription costs money per page, so a book that already has a complete
+ * `content.json` is skipped — otherwise restarting a long run would pay for the
+ * same pages twice.
+ */
+async function isAlreadyTranscribed(asin: string): Promise<boolean> {
+  const outDir = path.join('out', asin)
+  const metadata = await tryReadJsonFile<BookMetadata>(
+    path.join(outDir, 'metadata.json')
+  )
+  if (!metadata?.pages?.length) return false
+
+  const content = await tryReadJsonFile<ContentChunk[]>(
+    path.join(outDir, 'content.json')
+  )
+
+  // Allow for the odd page the model refused or failed on.
+  return !!content && content.length >= metadata.pages.length - 5
+}
+
 for (const [i, asin] of asins.entries()) {
   if (asins.length > 1) {
     console.log(`\n===== [${i + 1}/${asins.length}] ${asin} =====\n`)
   }
 
   try {
+    if (!getEnv('FORCE_RETRANSCRIBE') && (await isAlreadyTranscribed(asin))) {
+      console.log(
+        `${asin} already transcribed, skipping (FORCE_RETRANSCRIBE=1 to redo)`
+      )
+      continue
+    }
+
     await main(asin)
   } catch (err) {
     ++failures
