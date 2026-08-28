@@ -288,7 +288,17 @@ async function main() {
     // await page.locator('input[type="checkbox"]').click()
     await page.locator('input[type="submit"]').click()
 
-    if (!/\/kindle-library/g.test(new URL(page.url()).pathname)) {
+    // Amazon only asks for a 2FA code sometimes. Detect the OTP field itself
+    // rather than inferring it from the URL: a successful login lands on the
+    // reader page, not on /kindle-library, so a URL check would send us into
+    // the OTP branch even when no code was ever requested.
+    const otpInput = page.locator('input[type="tel"]').first()
+    const needsOtp = await otpInput
+      .waitFor({ state: 'visible', timeout: 15_000 })
+      .then(() => true)
+      .catch(() => false)
+
+    if (needsOtp) {
       const code = amazonTotpSecret
         ? new OTPAuth.TOTP({
             secret: OTPAuth.Secret.fromBase32(
@@ -299,14 +309,27 @@ async function main() {
             message: '2-factor auth code?'
           })
 
-      // Only enter 2-factor auth code if needed
       if (code) {
-        await page.locator('input[type="tel"]').fill(code)
-        await page
+        await otpInput.fill(code)
+
+        // The submit button's markup varies between Amazon's OTP variants;
+        // fall back to submitting the field directly.
+        const otpSubmit = page
           .locator(
-            'input[type="submit"][aria-labelledby="cvf-submit-otp-button-announce"]'
+            'input[type="submit"][aria-labelledby="cvf-submit-otp-button-announce"], ' +
+              'input[type="submit"], ' +
+              'button[type="submit"]'
           )
-          .click()
+          .first()
+        await otpSubmit
+          .click({ timeout: 15_000 })
+          .catch(() => otpInput.press('Enter'))
+
+        await page
+          .waitForURL((url) => !/\/ap\//.test(url.pathname), {
+            timeout: 60_000
+          })
+          .catch(() => {})
       }
     }
 
