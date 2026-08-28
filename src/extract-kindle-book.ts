@@ -666,25 +666,42 @@ async function main(asin: string) {
   for (let attempt = 0; attempt < 3 && !hasBookMetadata(); ++attempt) {
     if (attempt > 0) {
       console.warn(
-        `book metadata incomplete, reloading the reader (attempt ${attempt}/2)...`
+        `book metadata still incomplete, reloading the reader (attempt ${attempt}/2)...`
       )
-      await page.reload({ waitUntil: 'domcontentloaded' })
+      // A failed reload must not abort the book — we may already have enough on
+      // disk, and the next attempt can still succeed.
+      await page
+        .reload({ waitUntil: 'domcontentloaded' })
+        .catch((err: unknown) =>
+          console.warn(
+            `  ! reload failed: ${err instanceof Error ? err.message : String(err)}`
+          )
+        )
       await page
         .waitForSelector(krRendererMainImageSelector, { timeout: 60_000 })
         .catch(() => {})
     }
 
-    const deadline = Date.now() + 30_000
+    const deadline = Date.now() + 20_000
     while (!hasBookMetadata() && Date.now() < deadline) {
       await delay(250)
     }
+
+    // Check the disk before deciding another reload is needed: the packages
+    // usually did arrive, just not in the order the response handler wants.
+    if (!hasBookMetadata()) {
+      await recoverMetadataFromDisk()
+    }
   }
 
-  // The reader sends toc.json and location_map.json in separate render packages
-  // and in no guaranteed order; the response handler can only pair them when
-  // both have arrived. Everything is on disk by now, so read whatever is still
-  // missing straight from the extracted packages.
-  if (!hasBookMetadata()) {
+  /**
+   * The reader sends toc.json and location_map.json in separate render packages
+   * and in no guaranteed order; the response handler can only pair them when
+   * both have arrived. Whatever arrived is on disk, so read the missing pieces
+   * straight from the extracted packages — much cheaper and more reliable than
+   * reloading the reader and hoping for a better ordering.
+   */
+  async function recoverMetadataFromDisk() {
     const renderRoot = path.join(userDataDir, 'render')
     const renderDirs = await fs.readdir(renderRoot).catch(() => [])
 
