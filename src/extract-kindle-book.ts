@@ -13,6 +13,7 @@ import { chromium } from 'patchright'
 import sharp from 'sharp'
 
 import type {
+  AmazonBookMeta,
   AmazonRenderLocationMap,
   AmazonRenderToc,
   AmazonRenderTocItem,
@@ -175,6 +176,30 @@ async function main() {
       }
 
       const url = new URL(response.url())
+
+      // DEBUG_REQUESTS=1 lists every Amazon response the reader makes, which is
+      // how you find out where the metadata moved to when Amazon changes its
+      // endpoints.
+      if (getEnv('DEBUG_REQUESTS') && /amazon\./.test(url.hostname)) {
+        console.log(
+          `[req] ${url.hostname}${url.pathname}${url.search.slice(0, 120)}`
+        )
+
+        // DEBUG_REQUESTS=2 also dumps the bodies of the endpoints that could
+        // plausibly carry book metadata, so we can find where it moved to.
+        if (
+          getEnv('DEBUG_REQUESTS') === '2' &&
+          /reader-session|\.json$|getFileFromDrive|metadata|startReading|lookup/i.test(
+            url.pathname
+          )
+        ) {
+          const body = await response.text().catch(() => '')
+          console.log(
+            `[body] ${url.pathname} :: ${body.slice(0, 1200).replaceAll(/\s+/g, ' ')}`
+          )
+        }
+      }
+
       if (url.pathname.endsWith('YJmetadata.jsonp')) {
         const body = await response.text()
         const metadata = parseJsonpResponse<any>(body)
@@ -238,6 +263,37 @@ async function main() {
           if (metadata) {
             result.nav.startPosition = metadata.firstPositionId
             result.nav.endPosition = metadata.lastPositionId
+
+            // Amazon dropped the `YJmetadata.jsonp` endpoint this used to come
+            // from, but the same facts ship inside every render TAR: title,
+            // authors, language and the start-reading location.
+            if (!result.meta && metadata.bookTitle) {
+              const meta = {
+                asin,
+                title: metadata.bookTitle,
+                // The render metadata gives a real array of "Last, First"
+                // entries; normalizeAuthors only handles the old colon-joined
+                // single-string format and would drop all but the first.
+                authorList: (metadata.authors ?? []).map((author: string) =>
+                  author
+                    .split(',')
+                    .map((part) => part.trim())
+                    .toReversed()
+                    .join(' ')
+                ),
+                language: metadata.lang,
+                startPosition: metadata.srl ?? metadata.firstPositionId ?? 0,
+                endPosition: metadata.lastPositionId,
+                positions: {
+                  cover: metadata.coverPosistion ?? 0,
+                  srl: metadata.srl,
+                  toc: metadata.tocPosition ?? 0
+                }
+              } as unknown as AmazonBookMeta
+
+              console.warn('book meta (from render metadata)', meta)
+              result.meta = meta
+            }
           }
 
           const rawToc = await tryReadJsonFile<AmazonRenderToc>(
@@ -419,6 +475,26 @@ async function main() {
       )
     await delay(200)
 
+    // The footer only reports "page X of Y" while the "page in book" progress
+    // option is on. Without it the reader shows "Position X of Y" instead, and
+    // the extraction loop has no page numbers to count.
+    console.log('Enabling page numbers in the footer')
+    const pageInBook = page.locator('#page-in-book-item')
+    const pageInBookOn = await pageInBook
+      .evaluate((el) => !!(el as unknown as { checked?: boolean }).checked)
+      .catch(() => false)
+    if (!pageInBookOn) {
+      await pageInBook
+        .click({ timeout: 15_000 })
+        .catch(() =>
+          console.warn(
+            '  ! could not enable page numbers; the footer may show positions ' +
+              'instead of pages, which stops the extraction loop'
+          )
+        )
+      await delay(300)
+    }
+
     console.log('Closing settings')
     await settingsButton.click({ force: true }).catch(() => {})
     await delay(500)
@@ -450,11 +526,40 @@ async function main() {
   }
 
   async function getPageNav() {
-    const footerText = await page
+    // Amazon has moved this text around; fall back to the whole footer so a
+    // changed inner element does not silently yield "no page number".
+    let footerText = await page
       .locator('ion-footer ion-title')
       .first()
       .textContent()
+      .catch(() => null)
+
+    if (!parsePageNav(footerText)) {
+      footerText =
+        (await page
+          .locator('ion-footer')
+          .first()
+          .textContent()
+          .catch(() => null)) ?? footerText
+    }
+
     return parsePageNav(footerText)
+  }
+
+  async function debugFooter() {
+    const inner = await page
+      .locator('ion-footer ion-title')
+      .first()
+      .textContent()
+      .catch(() => '<no ion-title>')
+    const whole = await page
+      .locator('ion-footer')
+      .first()
+      .textContent()
+      .catch(() => '<no ion-footer>')
+    console.log('FOOTER ion-title:', JSON.stringify(inner))
+    console.log('FOOTER whole    :', JSON.stringify(whole?.slice(0, 120)))
+    console.log('FOOTER parsed   :', parsePageNav(whole ?? inner))
   }
 
   async function ensureFixedHeaderUI() {
@@ -536,8 +641,10 @@ async function main() {
   // The book metadata arrives through background requests. If the reader
   // restored an already-open book, they may not fire at all — wait for them and
   // reload the page if they never show up.
+  // `info` is deliberately not required: the endpoint it came from is gone and
+  // nothing downstream reads it.
   const hasBookMetadata = () =>
-    !!(result.info && result.meta && result.toc?.length && result.locationMap)
+    !!(result.meta && result.toc?.length && result.locationMap)
 
   for (let attempt = 0; attempt < 3 && !hasBookMetadata(); ++attempt) {
     if (attempt > 0) {
@@ -558,7 +665,6 @@ async function main() {
 
   if (!hasBookMetadata()) {
     console.warn('missing book metadata:', {
-      info: !!result.info,
       meta: !!result.meta,
       toc: result.toc?.length ?? 0,
       locationMap: !!result.locationMap
@@ -570,7 +676,6 @@ async function main() {
 
   // At this point, we should have recorded all the base book metadata from the
   // initial network requests.
-  assert(result.info, 'expected book info to be initialized')
   assert(result.meta, 'expected book meta to be initialized')
   assert(result.toc?.length, 'expected book toc to be initialized')
   assert(result.locationMap, 'expected book location map to be initialized')
@@ -622,14 +727,23 @@ async function main() {
   )
 
   // Loop through each page of the book
+  await debugFooter()
+
   do {
     const pageNav = await getPageNav()
 
     if (pageNav?.page === undefined) {
+      console.warn(
+        `stopping: the footer reports no page number (got ${JSON.stringify(pageNav)}). ` +
+          `Enable "page in book" in the reader settings, or the book has no page numbers.`
+      )
       break
     }
 
     if (pageNav.page > result.nav.totalNumContentPages) {
+      console.warn(
+        `stopping: reached page ${pageNav.page} of ${result.nav.totalNumContentPages} content pages`
+      )
       break
     }
 

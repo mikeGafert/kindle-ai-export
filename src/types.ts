@@ -1,6 +1,10 @@
 export interface BookMetadata {
   meta: AmazonBookMeta
-  info: AmazonBookInfo
+  /**
+   * Only present on older Kindle web readers. Amazon removed the
+   * `startReading` endpoint this was read from, and nothing else uses it.
+   */
+  info?: AmazonBookInfo
   nav: Nav
   toc: TocItem[]
   pages: PageChunk[]
