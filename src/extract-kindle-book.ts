@@ -259,7 +259,7 @@ async function main(asin: string) {
           if (locationMap) {
             result.locationMap = locationMap
 
-            for (const navUnit of result.locationMap.navigationUnit) {
+            for (const navUnit of result.locationMap.navigationUnit ?? []) {
               navUnit.page = Number.parseInt(navUnit.label, 10)
               assert(
                 !Number.isNaN(navUnit.page),
@@ -632,7 +632,8 @@ async function main(asin: string) {
     let resultPage = 1
 
     // TODO: this is O(n) but we can do better
-    for (const { startPosition, page } of result.locationMap.navigationUnit) {
+    for (const { startPosition, page } of result.locationMap.navigationUnit ??
+      []) {
       if (startPosition > position) break
 
       resultPage = page
@@ -736,7 +737,7 @@ async function main(asin: string) {
   assert(result.locationMap, 'expected book location map to be initialized')
 
   result.nav.startContentPosition = result.meta.startPosition
-  result.nav.totalNumPages = result.locationMap.navigationUnit.reduce(
+  result.nav.totalNumPages = (result.locationMap.navigationUnit ?? []).reduce(
     (acc, navUnit) => {
       return Math.max(acc, navUnit.page ?? -1)
     },

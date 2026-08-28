@@ -123,7 +123,8 @@ export interface AmazonBookInfo {
 
 export interface AmazonRenderLocationMap {
   locations: number[]
-  navigationUnit: Array<{
+  /** Absent for books without page numbers — they only carry `locations`. */
+  navigationUnit?: Array<{
     startPosition: number
     page: number // derived
     label: string
