@@ -519,20 +519,29 @@ async function main(asin: string) {
    * best-effort and fall back to whatever page the reader is already on.
    */
   async function goToPage(pageNumber: number) {
-    await page.locator('#reader-header').hover({ force: true })
+    // Short timeouts throughout: current readers no longer offer the menu entry
+    // this relies on, so failure is the common case — and with Playwright's 30s
+    // default that failure costs minutes of staring at an idle window.
+    const t = { timeout: 5000 }
+
+    await page.locator('#reader-header').hover({ force: true, ...t })
     await delay(200)
-    await page.locator('ion-button[aria-label="Reader menu"]').click()
+    // Address the menu by item-i-d; aria-labels are localized.
+    await page
+      .locator('ion-button[item-i-d="top_menu_navigation_menu"]')
+      .click({ force: true, ...t })
     await delay(500)
     await page
-      .locator('ion-item[role="listitem"]', { hasText: 'Go to Page' })
-      .click()
+      .locator('ion-item[role="listitem"]', {
+        hasText: /go to page|gehe zu seite/i
+      })
+      .click(t)
     await page
       .locator('ion-modal input[placeholder="page number"]')
-      .fill(`${pageNumber}`)
-    // await page.locator('ion-modal button', { hasText: 'Go' }).click()
+      .fill(`${pageNumber}`, t)
     await page
       .locator('ion-modal ion-button[item-i-d="go-to-modal-go-button"]')
-      .click()
+      .click(t)
     await delay(500)
   }
 
@@ -816,7 +825,11 @@ async function main(asin: string) {
   // Navigate to the first content page of the book. Best-effort: if the reader
   // has no "go to page" menu entry, carry on from wherever the book is open —
   // open it on the first page manually before starting the script.
-  await goToPage(result.nav.startContentPage).catch((err: unknown) => {
+  // Skipped for position-based books, where a page number means nothing anyway.
+  const skipGoToPage = usePositions || result.nav.startContentPage <= 1
+  await (
+    skipGoToPage ? Promise.resolve() : goToPage(result.nav.startContentPage)
+  ).catch((err: unknown) => {
     const reason = err instanceof Error ? err.message : String(err)
     console.warn(
       `\n! could not jump to page ${result.nav.startContentPage} automatically ` +
