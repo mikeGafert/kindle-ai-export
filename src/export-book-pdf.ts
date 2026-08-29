@@ -7,12 +7,10 @@ import path from 'node:path'
 import PDFDocument from 'pdfkit'
 
 import type { BookMetadata, ContentChunk } from './types'
-import { assert, getEnv } from './utils'
+import { getChapters } from './book-structure'
+import { assert, getEnv, parseAsins } from './utils'
 
-async function main() {
-  const asin = getEnv('ASIN')
-  assert(asin, 'ASIN is required')
-
+export async function exportPdf(asin: string): Promise<string> {
   const outDir = path.join('out', asin)
 
   const content = JSON.parse(
@@ -21,9 +19,8 @@ async function main() {
   const metadata = JSON.parse(
     await fsp.readFile(path.join(outDir, 'metadata.json'), 'utf8')
   ) as BookMetadata
-  assert(content.length, 'no book content found')
-  assert(metadata.meta, 'invalid book metadata: missing meta')
-  assert(metadata.toc?.length, 'invalid book metadata: missing toc')
+  assert(content.length, `${asin}: no book content found`)
+  assert(metadata.meta, `${asin}: invalid book metadata: missing meta`)
 
   const title = metadata.meta.title
   const authors = metadata.meta.authorList
@@ -36,7 +33,8 @@ async function main() {
       Author: authors.join(', ')
     }
   })
-  const stream = doc.pipe(fs.createWriteStream(path.join(outDir, 'book.pdf')))
+  const pdfPath = path.join(outDir, 'book.pdf')
+  const stream = doc.pipe(fs.createWriteStream(pdfPath))
 
   const fontSize = 12
 
@@ -62,41 +60,21 @@ async function main() {
 
   renderTitlePage()
 
+  const chapters = getChapters(metadata, content)
+  assert(chapters.length, `${asin}: could not split the book into chapters`)
+
   let needsNewPage = false
-  let index = 0
 
-  for (let i = 0; i < metadata.toc.length - 1; i++) {
-    const tocItem = metadata.toc[i]!
-    if (tocItem.page === undefined) continue
-
-    const nextTocItem = metadata.toc[i + 1]!
-    const nextIndex = nextTocItem.page
-      ? content.findIndex((c) => c.page >= nextTocItem.page!)
-      : content.length
-    if (nextIndex < index) continue
-
-    if (needsNewPage) {
-      doc.addPage()
-    }
-
-    // Aggregate all of the chunks in this chapter into a single string.
-    const chunks = content.slice(index, nextIndex)
-    const text = chunks.map((chunk) => chunk.text).join(' ')
-
-    ;(doc as any).outline.addItem(tocItem.label)
-    doc.fontSize(tocItem.depth === 1 ? 16 : 20)
-    doc.text(tocItem.label, { align: 'center', lineGap: 16 })
+  for (const chapter of chapters) {
+    if (needsNewPage) doc.addPage()
+    ;(doc as any).outline.addItem(chapter.label)
+    doc.fontSize(chapter.depth === 1 ? 16 : 20)
+    doc.text(chapter.label, { align: 'center', lineGap: 16 })
 
     doc.fontSize(fontSize)
     doc.moveDown(1)
+    doc.text(chapter.text, { indent: 20, lineGap: 4, paragraphGap: 8 })
 
-    doc.text(text, {
-      indent: 20,
-      lineGap: 4,
-      paragraphGap: 8
-    })
-
-    index = nextIndex
     needsNewPage = true
   }
 
@@ -105,6 +83,16 @@ async function main() {
     stream.on('finish', resolve)
     stream.on('error', reject)
   })
+
+  return pdfPath
 }
 
-await main()
+// Allow running this file on its own.
+if (path.basename(process.argv[1] ?? '').startsWith('export-book-pdf')) {
+  const asins = parseAsins(getEnv('ASIN'))
+  assert(asins.length, 'ASIN is required')
+
+  for (const asin of asins) {
+    console.log(`${asin} -> ${await exportPdf(asin)}`)
+  }
+}
