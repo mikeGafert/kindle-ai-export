@@ -48,3 +48,6 @@ out/
 # editor swap files
 .*.kate-swp
 *.swp
+
+# lokaler Helfer mit privaten ASINs
+run-nachhol.sh
