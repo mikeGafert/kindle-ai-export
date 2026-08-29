@@ -5,10 +5,10 @@ import path from 'node:path'
 
 import type { BookMetadata, ContentChunk } from './types'
 import { bookWorkDir } from './paths'
-import { assert, getEnv, readJsonFile } from './utils'
+import { assert, getEnv, parseAsins, readJsonFile } from './utils'
 
 async function main() {
-  const asin = getEnv('ASIN')
+  const [asin] = parseAsins(getEnv('ASIN'))
   assert(asin, 'ASIN is required')
 
   const outDir = bookWorkDir(asin)

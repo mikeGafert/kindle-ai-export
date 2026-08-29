@@ -79,6 +79,29 @@ function getDocumentsDir(): string {
   return home
 }
 
+/**
+ * Refuses configurations in which the work and output directories overlap.
+ *
+ * finalize-book moves the results into the output directory and then deletes
+ * the work directory. If the two are the same — or the output sits inside the
+ * work directory — that last step would delete the very files it just saved.
+ */
+export function assertDirectoriesDoNotOverlap(): void {
+  const work = path.resolve(getWorkDir())
+  const output = path.resolve(getOutputDir())
+
+  const inside = (a: string, b: string) => a.startsWith(b + path.sep)
+
+  if (work === output || inside(output, work) || inside(work, output)) {
+    throw new Error(
+      `WORK_DIR and OUTPUT_DIR must not overlap, otherwise finishing a book ` +
+        `would delete its own results.\n` +
+        `  WORK_DIR:   ${work}\n` +
+        `  OUTPUT_DIR: ${output}`
+    )
+  }
+}
+
 /** Working directory for one book. */
 export function bookWorkDir(asin: string): string {
   return path.join(getWorkDir(), asin)

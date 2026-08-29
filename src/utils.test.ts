@@ -9,7 +9,11 @@ describe('parseAsins', () => {
       'B07QLY87NH',
       'B00957T6X6'
     ])
-    expect(parseAsins(' B1 , B2 ;B3 ')).toEqual(['B1', 'B2', 'B3'])
+    expect(parseAsins(' B000000001 , B000000002 ;B000000003 ')).toEqual([
+      'B000000001',
+      'B000000002',
+      'B000000003'
+    ])
     expect(parseAsins('["B07QLY87NH","B00957T6X6"]')).toEqual([
       'B07QLY87NH',
       'B00957T6X6'
@@ -17,7 +21,10 @@ describe('parseAsins', () => {
   })
 
   test('deduplicates while keeping order', () => {
-    expect(parseAsins('B2,B1,B2,B1')).toEqual(['B2', 'B1'])
+    expect(parseAsins('B000000002,B000000001,B000000002')).toEqual([
+      'B000000002',
+      'B000000001'
+    ])
   })
 
   test('treats empty input as no books rather than one empty book', () => {
@@ -48,5 +55,21 @@ describe('normalizeAuthors', () => {
 
   test('survives empty input', () => {
     expect(normalizeAuthors([])).toEqual([])
+  })
+})
+
+describe('parseAsins — path safety', () => {
+  // An ASIN becomes a directory name that finalize-book later deletes.
+  // These are the inputs that would make it point somewhere dangerous.
+  test.each(['.', '..', '../..', 'foo/../..', '/etc', 'a/b', 'B07QLY87N'])(
+    'rejects %j instead of turning it into a path',
+    (bad) => {
+      expect(() => parseAsins(bad)).toThrow(/not a valid ASIN/)
+    }
+  )
+
+  test('still accepts real ASINs in any case', () => {
+    expect(parseAsins('b07qly87nh')).toEqual(['b07qly87nh'])
+    expect(parseAsins('1234567890')).toEqual(['1234567890'])
   })
 })

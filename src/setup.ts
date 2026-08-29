@@ -81,13 +81,29 @@ const settings: Record<SettingKey, Setting> = {
   }
 }
 
+/**
+ * dotenv stops an unquoted value at the first `#` — a password containing one
+ * would be silently truncated and look like a wrong password. Quoting avoids
+ * that, and also protects spaces and trailing whitespace.
+ */
+function quote(value: string): string {
+  if (!value) return ''
+  return `"${value.replaceAll('\\', '\\\\').replaceAll('"', '\\"')}"`
+}
+
+function unquote(value: string): string {
+  const trimmed = value.trim()
+  if (!/^".*"$/s.test(trimmed)) return trimmed
+  return trimmed.slice(1, -1).replaceAll('\\"', '"').replaceAll('\\\\', '\\')
+}
+
 async function readEnvFile(): Promise<Map<string, string>> {
   const values = new Map<string, string>()
   const raw = await fs.readFile(envPath, 'utf8').catch(() => '')
 
   for (const line of raw.split('\n')) {
     const match = line.match(/^([A-Z][A-Z0-9_]*)=(.*)$/)
-    if (match) values.set(match[1]!, match[2]!)
+    if (match) values.set(match[1]!, unquote(match[2]!))
   }
 
   return values
@@ -109,7 +125,7 @@ async function writeEnvFile(updates: Map<string, string>) {
     if (key && pending.has(key)) {
       const value = pending.get(key)!
       pending.delete(key)
-      return `${key}=${value}`
+      return `${key}=${quote(value)}`
     }
 
     return line
@@ -117,11 +133,16 @@ async function writeEnvFile(updates: Map<string, string>) {
 
   if (pending.size) {
     if (merged.length && merged.at(-1) !== '') merged.push('')
-    for (const [key, value] of pending) merged.push(`${key}=${value}`)
+    for (const [key, value] of pending) merged.push(`${key}=${quote(value)}`)
     merged.push('')
   }
 
-  await fs.writeFile(envPath, merged.join('\n'), { mode: 0o600 })
+  // Write to a temporary file and rename over the original: a crash halfway
+  // through a direct write would leave the .env truncated, losing every
+  // credential in it — not just the one being added.
+  const temporary = `${envPath}.tmp-${process.pid}`
+  await fs.writeFile(temporary, merged.join('\n'), { mode: 0o600 })
+  await fs.rename(temporary, envPath)
   await fs.chmod(envPath, 0o600).catch(() => {})
 }
 

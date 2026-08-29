@@ -6,7 +6,12 @@ import path from 'node:path'
 import type { BookMetadata, ContentChunk } from './types'
 import { exportEpub } from './export-book-epub'
 import { exportPdf } from './export-book-pdf'
-import { bookOutputDir, bookWorkDir, getOutputDir } from './paths'
+import {
+  assertDirectoriesDoNotOverlap,
+  bookOutputDir,
+  bookWorkDir,
+  getOutputDir
+} from './paths'
 import { assert, getEnv, parseAsins, tryReadJsonFile } from './utils'
 
 /**
@@ -58,6 +63,17 @@ async function verifyBeforeCleanup(asin: string): Promise<Check> {
   }
 
   const characters = content.reduce((sum, chunk) => sum + chunk.text.length, 0)
+
+  // A book whose OCR produced only whitespace would otherwise sail through the
+  // size checks below: with `characters` near zero, any real EPUB clears the
+  // proportional threshold on container overhead alone.
+  const perPage = characters / content.length
+  if (perPage < 80) {
+    return {
+      ok: false,
+      reason: `only ${Math.round(perPage)} characters per page on average — the OCR likely failed`
+    }
+  }
 
   for (const [file, minRatio] of [
     ['book.epub', 0.25],
@@ -111,9 +127,16 @@ async function moveResultsAndCleanUp(asin: string): Promise<number> {
   }
 
   if (keepPages) {
-    await fs
-      .rename(path.join(workDir, 'pages'), path.join(outputDir, 'pages'))
-      .catch(() => {})
+    const from = path.join(workDir, 'pages')
+    const to = path.join(outputDir, 'pages')
+
+    // Same rename-then-copy dance as above. Swallowing a failure here would be
+    // worse than elsewhere: the very next line deletes the directory, so the
+    // screenshots the user asked to keep would be gone without a word.
+    await fs.rename(from, to).catch(async () => {
+      await fs.cp(from, to, { recursive: true })
+      await fs.rm(from, { recursive: true, force: true })
+    })
   }
 
   await fs.rm(workDir, { recursive: true, force: true })
@@ -157,6 +180,9 @@ async function finalize(asin: string): Promise<{ freed: number }> {
   console.log(`  done — ${bookOutputDir(asin)}, freed ${mb(freed)}`)
   return { freed }
 }
+
+// Refuse to run at all if finishing a book would delete its own results.
+assertDirectoriesDoNotOverlap()
 
 const asins = parseAsins(getEnv('ASIN'))
 assert(asins.length, 'ASIN is required')

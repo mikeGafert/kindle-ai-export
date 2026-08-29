@@ -74,8 +74,27 @@ export function parseTocItems(
     const percentage = item.page / totalNumPages
     if (percentage < 0.9) return false
 
-    // (epilogue purposefully shortened here)
+    // (epilogue purposefully shortened here) — 'Epilog' in German too
     if (/^epilog/i.test(item.label)) return false
+
+    // German back matter. Without these a German book carries its
+    // acknowledgements, author bio and publisher advertising into the export as
+    // if it were content.
+    if (/^danksagung/i.test(item.label)) return true
+    if (/^(über|ueber) (den|die) autor/i.test(item.label)) return true
+    if (/^(der|die) autor(in)?$/i.test(item.label)) return true
+    if (/^impressum$/i.test(item.label)) return true
+    if (/^urheberrecht/i.test(item.label)) return true
+    if (/^leseprobe/i.test(item.label)) return true
+    if (/^weitere (b(ü|ue)cher|titel|werke)/i.test(item.label)) return true
+    if (/^(auch|ebenfalls) von /i.test(item.label)) return true
+    if (/^anmerkungen? (des|der) (autors|autorin)/i.test(item.label))
+      return true
+    if (/^nachwort/i.test(item.label)) return true
+    if (/^glossar$/i.test(item.label)) return true
+    if (/^quellen(angaben|verzeichnis)?$/i.test(item.label)) return true
+    if (/^bildnachweis/i.test(item.label)) return true
+    if (/^newsletter/i.test(item.label)) return true
 
     // heuristics for detecting post-book sections
     if (/acknowledgements/i.test(item.label)) return true

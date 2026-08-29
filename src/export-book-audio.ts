@@ -18,13 +18,14 @@ import {
   fileExists,
   getEnv,
   hashObject,
+  parseAsins,
   readJsonFile
 } from './utils'
 
 type TTSEngine = 'openai' | 'unrealspeech'
 
 async function main() {
-  const asin = getEnv('ASIN')
+  const [asin] = parseAsins(getEnv('ASIN'))
   assert(asin, 'ASIN is required')
 
   // If force mode, we'll always regenerate all of the audio files.

@@ -63,8 +63,30 @@ export function parseAsins(raw: string | undefined): string[] {
 
   const asins = parts.map((part) => part.trim()).filter(Boolean)
 
+  // Validate the format here rather than only in the interactive setup: an ASIN
+  // becomes a path segment, and '.' or '..' would make it point at the work
+  // directory itself — which finalize-book deletes when it is done.
+  for (const asin of asins) {
+    if (!/^[A-Z0-9]{10}$/i.test(asin)) {
+      throw new Error(
+        `"${asin}" is not a valid ASIN — expected 10 letters or digits, e.g. B07QLY87NH`
+      )
+    }
+  }
+
   // Deduplicate while preserving order, so a repeated ASIN is not exported twice.
   return [...new Set(asins)]
+}
+
+/**
+ * Reads an on/off environment variable the way people expect.
+ *
+ * A plain truthiness check treats FORCE_REEXTRACT=0 as "on", which is exactly
+ * how someone would try to turn it off again.
+ */
+export function isTruthy(value: string | undefined): boolean {
+  if (!value) return false
+  return !['0', 'false', 'no', 'off', ''].includes(value.trim().toLowerCase())
 }
 
 export function normalizeAuthors(rawAuthors: string[]): string[] {

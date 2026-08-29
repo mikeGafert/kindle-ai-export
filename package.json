@@ -20,7 +20,11 @@
     "test:lint": "eslint .",
     "test:typecheck": "tsc --noEmit",
     "prepare": "simple-git-hooks",
-    "test:unit": "vitest run"
+    "test:unit": "vitest run",
+    "start": "tsx src/run-all.ts",
+    "extract": "tsx src/extract-kindle-book.ts",
+    "transcribe": "tsx src/transcribe-book-content.ts",
+    "finalize": "tsx src/finalize-book.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.121.0",

@@ -282,12 +282,19 @@ async function main(asin: string) {
       try {
         result = await runBatch(slice, label)
       } catch (err: any) {
-        if (mode === 'batch' || err?.statusCode !== 402) throw err
+        if (err?.statusCode !== 402) throw err
+
+        // Say what 402 means here, whichever mode we are in — the raw SDK error
+        // ("Payment Required") does not tell anyone what to do about it.
         console.warn(
-          '  ! the batch API is not enabled for this account — falling back to ' +
-            'single requests (twice the price per page).\n' +
-            '    Enable batch billing in the Mistral console to halve it.'
+          '  ! the batch API is not enabled for this Mistral account.\n' +
+            '    Enable billing for batch jobs in https://console.mistral.ai — ' +
+            'batch costs half as much per page as single requests.'
         )
+
+        if (mode === 'batch') throw err
+
+        console.warn('    Falling back to single requests for now.')
         useBatch = false
       }
     }
