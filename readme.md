@@ -1,5 +1,19 @@
 # Kindle AI Export <!-- omit from toc -->
 
+> **Fork-Hinweis.** Dies ist Mikes Fork von
+> [transitive-bullshit/kindle-ai-export](https://github.com/transitive-bullshit/kindle-ai-export)
+> (MIT, Travis Fischer). Angepasst für den heutigen Kindle-Web-Reader und eine
+> deutschsprachige Oberfläche:
+>
+> - Metadaten aus den `render`-Paketen, da Amazon `startReading` und
+>   `YJmetadata.jsonp` abgeschafft hat
+> - sprachneutrale Selektoren (`item-i-d`/Element-IDs statt englischer Beschriftungen)
+> - Bücher ohne Seitenzahlen werden über Kindle-Positionen gelesen
+> - mehrere ASINs pro Lauf, Wiederaufnahme über einen `complete`-Marker
+> - Transkription über **Mistral OCR** im Batch-Modus statt eines Vision-LLM
+>   (`src/transcribe-book-content-claude.ts` behält die LLM-Variante)
+> - Browser frei wählbar (`CHROME_EXECUTABLE_PATH`), 2FA per `AMAZON_TOTP_SECRET`
+
 > Export any Kindle book you own as text, PDF, EPUB, or as a custom, AI-narrated audiobook. 🔥
 
 <p>
