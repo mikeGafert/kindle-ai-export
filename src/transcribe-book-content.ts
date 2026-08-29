@@ -4,6 +4,7 @@ import fs from 'node:fs/promises'
 import path from 'node:path'
 
 import { Mistral } from '@mistralai/mistralai'
+import pMap from 'p-map'
 
 import type { BookMetadata, ContentChunk, PageChunk, TocItem } from './types'
 import {
@@ -30,6 +31,16 @@ const model = getEnv('MISTRAL_OCR_MODEL') ?? 'mistral-ocr-3'
  * a whole large book in one file would run into the upload size limit.
  */
 const batchSize = Number.parseInt(getEnv('MISTRAL_BATCH_SIZE') ?? '400', 10)
+
+/**
+ * `batch` is half the price but has to be unlocked separately in the Mistral
+ * console (it answers 402 otherwise); `sync` posts each page to /v1/ocr.
+ * `auto` tries batch first and falls back to sync when it is not available.
+ */
+const mode = getEnv('MISTRAL_MODE') ?? 'auto'
+
+/** Parallel requests in sync mode. Raise it if your rate limit allows. */
+const concurrency = Number.parseInt(getEnv('MISTRAL_CONCURRENCY') ?? '5', 10)
 
 /** Transcribe only the first N pages — useful for a cheap trial run. */
 const limit = Number.parseInt(getEnv('TRANSCRIBE_LIMIT') ?? '0', 10)
@@ -168,6 +179,59 @@ async function runBatch(
   return texts
 }
 
+/** Posts each page to /v1/ocr directly, with limited concurrency. */
+async function runSync(
+  pages: PageChunk[],
+  label: string
+): Promise<Map<number, string>> {
+  console.log(`  ${label}: ${pages.length} pages, ${concurrency} at a time`)
+  const texts = new Map<number, string>()
+  let done = 0
+
+  await pMap(
+    pages,
+    async (pageChunk) => {
+      const image = await fs.readFile(pageChunk.screenshot)
+
+      for (let attempt = 0; attempt < 5; ++attempt) {
+        try {
+          const res = await client.ocr.process({
+            model,
+            document: {
+              type: 'image_url',
+              imageUrl: `data:image/png;base64,${image.toString('base64')}`
+            }
+          })
+
+          texts.set(
+            pageChunk.index,
+            (res.pages ?? [])
+              .map((p) => p.markdown ?? '')
+              .join('\n')
+              .trim()
+          )
+          break
+        } catch (err: any) {
+          // Back off on rate limits, give up on anything else.
+          if (err?.statusCode !== 429 || attempt === 4) {
+            console.warn(
+              `  ! page ${pageChunk.page} failed:`,
+              err?.statusCode ?? err
+            )
+            break
+          }
+          await new Promise((r) => setTimeout(r, 2000 * (attempt + 1)))
+        }
+      }
+
+      if (++done % 50 === 0) console.log(`  ${label}: ${done}/${pages.length}`)
+    },
+    { concurrency }
+  )
+
+  return texts
+}
+
 async function main(asin: string) {
   const outDir = path.join('out', asin)
   const metadataPath = path.join(outDir, 'metadata.json')
@@ -201,11 +265,29 @@ async function main(asin: string) {
   }
 
   const texts = new Map<number, string>()
+  let useBatch = mode !== 'sync'
 
   for (let offset = 0; offset < pages.length; offset += batchSize) {
     const slice = pages.slice(offset, offset + batchSize)
     const label = `${asin} ${offset + 1}-${offset + slice.length}`
-    const result = await runBatch(slice, label)
+
+    let result: Map<number, string> | undefined
+
+    if (useBatch) {
+      try {
+        result = await runBatch(slice, label)
+      } catch (err: any) {
+        if (mode === 'batch' || err?.statusCode !== 402) throw err
+        console.warn(
+          '  ! the batch API is not enabled for this account — falling back to ' +
+            'single requests (twice the price per page).\n' +
+            '    Enable batch billing in the Mistral console to halve it.'
+        )
+        useBatch = false
+      }
+    }
+
+    result ??= await runSync(slice, label)
     for (const [index, text] of result) texts.set(index, text)
   }
 
