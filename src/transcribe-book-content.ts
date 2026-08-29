@@ -7,6 +7,7 @@ import { Mistral } from '@mistralai/mistralai'
 import pMap from 'p-map'
 
 import type { BookMetadata, ContentChunk, PageChunk, TocItem } from './types'
+import { ensureConfig } from './setup'
 import {
   assert,
   getEnv,
@@ -50,6 +51,8 @@ const jobTimeoutMinutes = Number.parseInt(
   getEnv('MISTRAL_JOB_TIMEOUT_MINUTES') ?? '180',
   10
 )
+
+await ensureConfig(['MISTRAL_API_KEY', 'ASIN'])
 
 const apiKey = getEnv('MISTRAL_API_KEY')
 assert(

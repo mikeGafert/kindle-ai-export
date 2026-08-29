@@ -21,6 +21,7 @@ import type {
   TocItem
 } from './types'
 import { parsePageNav, parseTocItems } from './playwright-utils'
+import { ensureConfig } from './setup'
 import {
   assert,
   extractTar,
@@ -413,9 +414,17 @@ async function main(asin: string) {
               amazonTotpSecret.replaceAll(/\s+/g, '').toUpperCase()
             )
           }).generate()
-        : await input({
-            message: '2-factor auth code?'
-          })
+        : process.stdin.isTTY
+          ? await input({ message: '2-factor auth code?' })
+          : ''
+
+      if (!code) {
+        throw new Error(
+          'Amazon is asking for a 2FA code but none was provided. Either set ' +
+            'AMAZON_TOTP_SECRET in .env, or run this in an interactive ' +
+            'terminal so the code can be typed in.'
+        )
+      }
 
       if (code) {
         await otpInput.fill(code)
@@ -1143,6 +1152,10 @@ async function main(asin: string) {
     delay(20_000, { signal })
   ]).catch(() => {})
 }
+
+// Ask for anything still missing before touching the browser, so a fresh
+// checkout works without editing .env by hand.
+await ensureConfig(['AMAZON_EMAIL', 'AMAZON_PASSWORD', 'ASIN'])
 
 const asins = parseAsins(getEnv('ASIN'))
 assert(

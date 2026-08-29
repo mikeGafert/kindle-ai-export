@@ -175,6 +175,15 @@ Make sure you have `node >= 18` and [pnpm](https://pnpm.io) installed.
 
 ### Setup Env Vars
 
+> **Beim ersten Start fragt das Skript selbst.** Läuft `extract-kindle-book.ts`
+> oder `transcribe-book-content.ts` in einem Terminal und fehlen Zugangsdaten,
+> werden sie abgefragt und in `.env` (Modus 600, git-ignored) gespeichert.
+> Passwörter und Schlüssel werden maskiert eingegeben. Das 2FA-Secret ist
+> optional — ohne es fragt der Login bei Bedarf nach dem Code aus der App.
+> In einer nicht-interaktiven Umgebung wird nichts gefragt, sondern gemeldet,
+> was fehlt. Die folgenden Variablen lassen sich auch von Hand setzen:
+
+
 Set up these required environment variables in a local `.env`:
 
 ```sh

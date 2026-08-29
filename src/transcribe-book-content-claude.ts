@@ -7,6 +7,7 @@ import Anthropic from '@anthropic-ai/sdk'
 import pMap from 'p-map'
 
 import type { BookMetadata, ContentChunk, TocItem } from './types'
+import { ensureConfig } from './setup'
 import {
   assert,
   getEnv,
@@ -207,6 +208,8 @@ async function main(asin: string) {
     `\ntranscribed ${content.length} of ${pages.length} pages -> ${contentPath}`
   )
 }
+
+await ensureConfig(['ANTHROPIC_API_KEY', 'ASIN'])
 
 const asins = parseAsins(getEnv('ASIN'))
 assert(
