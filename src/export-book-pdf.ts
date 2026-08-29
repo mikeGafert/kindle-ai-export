@@ -8,6 +8,7 @@ import PDFDocument from 'pdfkit'
 
 import type { BookMetadata, ContentChunk } from './types'
 import { getChapters } from './book-structure'
+import { findUnicodeFont } from './fonts'
 import { bookWorkDir } from './paths'
 import { assert, getEnv, parseAsins } from './utils'
 
@@ -38,6 +39,21 @@ export async function exportPdf(asin: string): Promise<string> {
   const stream = doc.pipe(fs.createWriteStream(pdfPath))
 
   const fontSize = 12
+
+  // Without an embedded font, PDFKit drops every character outside CP1252 —
+  // arrows, diamonds, superscript footnote markers, ligatures — with no error
+  // at all. Better a warning than a PDF that quietly lost characters.
+  const font = findUnicodeFont()
+  if (font) {
+    doc.registerFont('body', font.path)
+    doc.font('body')
+  } else {
+    console.warn(
+      '  ! no Unicode font found — the PDF will drop characters outside ' +
+        'Western European (arrows, ligatures, superscripts).\n' +
+        '    Install DejaVu/Noto/Liberation fonts, or set PDF_FONT to a .ttf file.'
+    )
+  }
 
   const renderTitlePage = () => {
     ;(doc as any).outline.addItem('Title Page')

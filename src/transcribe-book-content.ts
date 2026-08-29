@@ -237,6 +237,61 @@ async function runSync(
   return texts
 }
 
+/**
+ * Turns the raw OCR results into the content chunks that get written out.
+ * Separate function so progress can be persisted between batches.
+ */
+function buildContent(
+  pages: PageChunk[],
+  texts: Map<number, string>,
+  pageToTocItemMap: Record<number, TocItem>
+): ContentChunk[] {
+  const content: ContentChunk[] = []
+
+  for (const [i, pageChunk] of pages.entries()) {
+    const text = texts.get(pageChunk.index)
+    if (text === undefined) continue
+
+    // Without the m flag this only strips a leading page number, not a stray
+    // numeric line in the middle of the page (a scene break, a recipe step).
+    let cleaned = stripMarkdown(text)
+      .replace(/^\s*\d+\s*\n+/, '')
+      .replaceAll(/^\s*/gm, '')
+      .replaceAll(/\s*$/gm, '')
+
+    // Drop a chapter heading that the reader repeats at the top of the page it
+    // starts on; the TOC already carries it.
+    const prevPageChunk = pages[i - 1]
+    if (prevPageChunk && prevPageChunk.page !== pageChunk.page) {
+      const tocItem = pageToTocItemMap[pageChunk.page]
+      if (tocItem) {
+        // Escape the label: a title like "Wer bin ich?" would otherwise turn
+        // its punctuation into regex operators — at best it stops matching, at
+        // worst an unbalanced bracket throws and takes the whole (paid-for)
+        // transcription down with it.
+        const literal = tocItem.label.replaceAll(
+          /[.*+?^${}()|[\]\\]/g,
+          String.raw`\$&`
+        )
+        cleaned = cleaned.replace(
+          // eslint-disable-next-line security/detect-non-literal-regexp
+          new RegExp(`^${literal}\\s*`, 'i'),
+          ''
+        )
+      }
+    }
+
+    content.push({
+      index: pageChunk.index,
+      page: pageChunk.page,
+      text: cleaned,
+      screenshot: pageChunk.screenshot
+    })
+  }
+
+  return content
+}
+
 async function main(asin: string) {
   const outDir = bookWorkDir(asin)
   const metadataPath = path.join(outDir, 'metadata.json')
@@ -269,8 +324,17 @@ async function main(asin: string) {
     )
   }
 
+  const contentPath = path.join(outDir, 'content.json')
   const texts = new Map<number, string>()
   let useBatch = mode !== 'sync'
+
+  // Written after every block, not just at the end: a book split into several
+  // batches would otherwise lose — and have to pay again for — everything
+  // transcribed so far if a later block fails.
+  const writeProgress = async () => {
+    const done = buildContent(pages, texts, pageToTocItemMap)
+    await fs.writeFile(contentPath, JSON.stringify(done, null, 2))
+  }
 
   for (let offset = 0; offset < pages.length; offset += batchSize) {
     const slice = pages.slice(offset, offset + batchSize)
@@ -300,44 +364,27 @@ async function main(asin: string) {
     }
 
     result ??= await runSync(slice, label)
-    for (const [index, text] of result) texts.set(index, text)
-  }
 
-  const content: ContentChunk[] = []
-
-  for (const [i, pageChunk] of pages.entries()) {
-    const text = texts.get(pageChunk.index)
-    if (text === undefined) continue
-
-    let cleaned = stripMarkdown(text)
-      .replace(/^\s*\d+\s*$\n+/m, '')
-      .replaceAll(/^\s*/gm, '')
-      .replaceAll(/\s*$/gm, '')
-
-    // Drop a chapter heading that the reader repeats at the top of the page it
-    // starts on; the TOC already carries it.
-    const prevPageChunk = pages[i - 1]
-    if (prevPageChunk && prevPageChunk.page !== pageChunk.page) {
-      const tocItem = pageToTocItemMap[pageChunk.page]
-      if (tocItem) {
-        cleaned = cleaned.replace(
-          // eslint-disable-next-line security/detect-non-literal-regexp
-          new RegExp(`^${tocItem.label}\\s*`, 'i'),
-          ''
-        )
-      }
+    // A batch job reports SUCCESS even when individual pages failed. Without
+    // this the missing pages are silently absent from content.json — and since
+    // the "already transcribed" check tolerates a few gaps, they would never be
+    // picked up again.
+    const missing = slice.filter((p) => !result!.has(p.index))
+    if (missing.length) {
+      console.warn(
+        `  ! ${missing.length} page(s) missing from the batch result — retrying them individually`
+      )
+      const retried = await runSync(missing, `${label} retry`)
+      for (const [index, text] of retried) result.set(index, text)
     }
 
-    content.push({
-      index: pageChunk.index,
-      page: pageChunk.page,
-      text: cleaned,
-      screenshot: pageChunk.screenshot
-    })
+    for (const [index, text] of result) texts.set(index, text)
+    await writeProgress()
   }
 
-  const contentPath = path.join(outDir, 'content.json')
-  await fs.writeFile(contentPath, JSON.stringify(content, null, 2))
+  await writeProgress()
+
+  const content = buildContent(pages, texts, pageToTocItemMap)
   console.log(
     `\ntranscribed ${content.length} of ${pages.length} pages -> ${contentPath}`
   )

@@ -18,19 +18,25 @@ const epub =
 
 /** Escapes text for XHTML and turns blank lines into paragraphs. */
 function toXhtml(text: string): string {
-  return text
-    .split(/\n{2,}/)
-    .map((paragraph) => paragraph.trim())
-    .filter(Boolean)
-    .map(
-      (paragraph) =>
-        `<p>${paragraph
-          .replaceAll('&', '&amp;')
-          .replaceAll('<', '&lt;')
-          .replaceAll('>', '&gt;')
-          .replaceAll('\n', '<br/>')}</p>`
-    )
-    .join('\n')
+  return (
+    text
+      // XML 1.0 forbids most control characters. A single one from a bad OCR
+      // glyph makes the whole EPUB malformed, so drop them before escaping.
+
+      .replaceAll(/[^\t\n\r\u0020-\uD7FF\uE000-\uFFFD]/g, '')
+      .split(/\n{2,}/)
+      .map((paragraph) => paragraph.trim())
+      .filter(Boolean)
+      .map(
+        (paragraph) =>
+          `<p>${paragraph
+            .replaceAll('&', '&amp;')
+            .replaceAll('<', '&lt;')
+            .replaceAll('>', '&gt;')
+            .replaceAll('\n', '<br/>')}</p>`
+      )
+      .join('\n')
+  )
 }
 
 export async function exportEpub(asin: string): Promise<string> {

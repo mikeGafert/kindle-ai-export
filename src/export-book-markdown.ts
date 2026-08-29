@@ -4,90 +4,76 @@ import fs from 'node:fs/promises'
 import path from 'node:path'
 
 import type { BookMetadata, ContentChunk } from './types'
+import { getChapters } from './book-structure'
 import { bookWorkDir } from './paths'
 import { assert, getEnv, parseAsins, readJsonFile } from './utils'
 
-async function main() {
-  const [asin] = parseAsins(getEnv('ASIN'))
-  assert(asin, 'ASIN is required')
+/**
+ * Rewritten to use the shared chapter splitting.
+ *
+ * The previous version had its own copy of that logic with two faults: it
+ * never rendered the last TOC entry (its loop stopped one short), and for
+ * books without page numbers — where every TOC entry says page 1 — it produced
+ * headings with no text under them at all.
+ */
+function slug(label: string): string {
+  return label
+    .toLowerCase()
+    .replaceAll(/[^\da-z]+/g, '-')
+    .replaceAll(/^-|-$/g, '')
+}
 
+export async function exportMarkdown(asin: string): Promise<string> {
   const outDir = bookWorkDir(asin)
-
-  const content = await readJsonFile<ContentChunk[]>(
-    path.join(outDir, 'content.json')
-  )
   const metadata = await readJsonFile<BookMetadata>(
     path.join(outDir, 'metadata.json')
   )
-  assert(content.length, 'no book content found')
-  assert(metadata.meta, 'invalid book metadata: missing meta')
-  assert(metadata.toc?.length, 'invalid book metadata: missing toc')
+  const content = await readJsonFile<ContentChunk[]>(
+    path.join(outDir, 'content.json')
+  )
 
-  const title = metadata.meta.title
-  const authors = metadata.meta.authorList
+  assert(content.length, `${asin}: no book content found`)
+  assert(metadata.meta, `${asin}: invalid book metadata`)
 
-  let lastTocItemIndex = 0
-  for (let i = 0, index = 0; i < metadata.toc.length - 1; i++) {
-    const tocItem = metadata.toc[i]!
-    if (tocItem.page === undefined) continue
+  const chapters = getChapters(metadata, content)
 
-    const nextTocItem = metadata.toc[i + 1]!
-    const nextIndex = nextTocItem.page
-      ? content.findIndex((c) => c.page >= nextTocItem.page!)
-      : content.length
-    if (nextIndex < index) continue
+  const toc = chapters
+    .map(
+      (chapter) =>
+        `${'  '.repeat(chapter.depth)}- [${chapter.label}](#${slug(chapter.label)})`
+    )
+    .join('\n')
 
-    lastTocItemIndex = i
-  }
+  const body = chapters
+    .map((chapter) => `## ${chapter.label}\n\n${chapter.text}`)
+    .join('\n\n---\n\n')
 
-  let output = `# ${title}
+  const markdown = `# ${metadata.meta.title}
 
-> By ${authors.join(', ')}
+> By ${metadata.meta.authorList.join(', ')}
 
 ---
 
-## Table of Contents
+## Inhaltsverzeichnis
 
-${metadata.toc
-  .filter(
-    (tocItem, index) => tocItem.page !== undefined && index <= lastTocItemIndex
-  )
-  .map(
-    (tocItem) =>
-      `${'  '.repeat(tocItem.depth)}- [${tocItem.label}](#${tocItem.label.toLowerCase().replaceAll(/[^\da-z]+/g, '-')})`
-  )
-  .join('\n')}
+${toc}
 
----`
+---
 
-  for (let i = 0, index = 0; i < metadata.toc.length - 1; i++) {
-    const tocItem = metadata.toc[i]!
-    if (tocItem.page === undefined) continue
+${body}
+`
 
-    const nextTocItem = metadata.toc[i + 1]!
-    const nextIndex = nextTocItem.page
-      ? content.findIndex((c) => c.page >= nextTocItem.page!)
-      : content.length
-    if (nextIndex < index) continue
-
-    const chunks = content.slice(index, nextIndex)
-
-    const text = chunks
-      .map((chunk) => chunk.text)
-      .join(' ')
-      .replaceAll('\n', '\n\n')
-
-    output += `
-
-${'#'.repeat(tocItem.depth + 2)} ${tocItem.label}
-
-${text}`
-
-    index = nextIndex
-  }
-
-  await fs.writeFile(path.join(outDir, 'book.md'), output)
-  console.log(output)
+  const markdownPath = path.join(outDir, 'book.md')
+  await fs.writeFile(markdownPath, markdown)
+  return markdownPath
 }
 
-await main()
+// Allow running this file on its own.
+if (path.basename(process.argv[1] ?? '').startsWith('export-book-markdown')) {
+  const asins = parseAsins(getEnv('ASIN'))
+  assert(asins.length, 'ASIN is required')
+
+  for (const asin of asins) {
+    console.log(`${asin} -> ${await exportMarkdown(asin)}`)
+  }
+}

@@ -102,6 +102,54 @@ describe('getChapters — books without page numbers', () => {
   })
 })
 
+describe('getChapters — awkward tables of contents', () => {
+  const content = [
+    chunk(1, 'Vorspann'),
+    chunk(5, 'Text von Teil eins'),
+    chunk(9, 'Text von Kapitel zwei'),
+    chunk(12, 'Schluss')
+  ]
+
+  test('merges a part title and chapter that share a page', () => {
+    // Very common in print: "Teil Eins" and "Kapitel 1" open the same page.
+    // Previously the first became an empty chapter and its heading vanished.
+    const chapters = getChapters(
+      meta([{ page: 5 }, { page: 5 }, { page: 9 }]),
+      content
+    )
+    const labels = chapters.map((c) => c.label)
+    expect(labels.some((l) => l.includes('Kapitel 1'))).toBe(true)
+    expect(labels.some((l) => l.includes('Kapitel 2'))).toBe(true)
+    assertNoTextLost(content, chapters)
+  })
+
+  test('drops a backwards anchor instead of duplicating a page', () => {
+    // Anchors [10, 8, 9]: comparing against the raw array kept 10 and 9 and
+    // put one page into two chapters.
+    const chapters = getChapters(
+      meta([{ page: 10 }, { page: 8 }, { page: 9 }]),
+      content
+    )
+    const joined = chapters.map((c) => c.text).join('\n')
+    for (const c of content) {
+      const occurrences = joined.split(c.text).length - 1
+      expect(occurrences, `"${c.text}" appears ${occurrences}x`).toBeLessThan(2)
+    }
+  })
+
+  test('keeps prose that legitimately opens with its own title', () => {
+    // A one-word chapter opening is a real stylistic device; only the page
+    // heading and the running head may be stripped, not the prose.
+    const chapters = getChapters(meta([{ page: 5 }, { page: 9 }]), [
+      chunk(5, 'Verrat\nVerrat\nVerrat\nEr hatte es nie kommen sehen.'),
+      chunk(9, 'Weiter')
+    ])
+    const first = chapters.find((c) => c.label === 'Kapitel 1')!
+    expect(first.text).toContain('Verrat')
+    expect(first.text).toContain('Er hatte es nie kommen sehen.')
+  })
+})
+
 describe('getChapters — degenerate input', () => {
   const content = [chunk(1, 'Alles in einem'), chunk(2, 'Zweite Seite')]
 
