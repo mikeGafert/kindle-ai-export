@@ -7,6 +7,7 @@ import epubModule from 'epub-gen-memory'
 
 import type { BookMetadata, ContentChunk } from './types'
 import { getChapters } from './book-structure'
+import { bookWorkDir } from './paths'
 import { assert, getEnv, parseAsins, readJsonFile } from './utils'
 
 // The package is CommonJS: the callable lives on `.default` when it is required
@@ -33,7 +34,7 @@ function toXhtml(text: string): string {
 }
 
 export async function exportEpub(asin: string): Promise<string> {
-  const outDir = path.join('out', asin)
+  const outDir = bookWorkDir(asin)
   const metadata = await readJsonFile<BookMetadata>(
     path.join(outDir, 'metadata.json')
   )

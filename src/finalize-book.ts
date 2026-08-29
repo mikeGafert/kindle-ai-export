@@ -6,6 +6,7 @@ import path from 'node:path'
 import type { BookMetadata, ContentChunk } from './types'
 import { exportEpub } from './export-book-epub'
 import { exportPdf } from './export-book-pdf'
+import { bookOutputDir, bookWorkDir, getOutputDir } from './paths'
 import { assert, getEnv, parseAsins, tryReadJsonFile } from './utils'
 
 /**
@@ -34,7 +35,7 @@ type Check = { ok: boolean; reason?: string }
  * book from Amazon again, so this errs on the side of keeping them.
  */
 async function verifyBeforeCleanup(asin: string): Promise<Check> {
-  const outDir = path.join('out', asin)
+  const outDir = bookWorkDir(asin)
 
   const metadata = await tryReadJsonFile<BookMetadata>(
     path.join(outDir, 'metadata.json')
@@ -78,19 +79,45 @@ async function verifyBeforeCleanup(asin: string): Promise<Check> {
   return { ok: true }
 }
 
-async function cleanUp(asin: string): Promise<number> {
-  const outDir = path.join('out', asin)
-  let freed = 0
+/**
+ * Moves the four keepers to the output directory and drops the rest.
+ *
+ * The working directory holds hundreds of megabytes per book — screenshots and
+ * a full browser profile — which nobody needs once the book is exported. The
+ * results are small enough to live in the documents folder, where a cloud sync
+ * is welcome rather than a burden.
+ */
+async function moveResultsAndCleanUp(asin: string): Promise<number> {
+  const workDir = bookWorkDir(asin)
+  const outputDir = bookOutputDir(asin)
 
-  const removable = keepPages ? ['data'] : ['data', 'pages']
+  const freed = await directorySize(workDir)
+  await fs.mkdir(outputDir, { recursive: true })
 
-  for (const dir of removable) {
-    const target = path.join(outDir, dir)
-    freed += await directorySize(target)
-    await fs.rm(target, { recursive: true, force: true })
+  for (const file of [
+    'book.epub',
+    'book.pdf',
+    'content.json',
+    'metadata.json'
+  ]) {
+    const from = path.join(workDir, file)
+    const to = path.join(outputDir, file)
+
+    // rename() fails across filesystems, so fall back to copying.
+    await fs.rename(from, to).catch(async () => {
+      await fs.copyFile(from, to)
+      await fs.rm(from, { force: true })
+    })
   }
 
-  return freed
+  if (keepPages) {
+    await fs
+      .rename(path.join(workDir, 'pages'), path.join(outputDir, 'pages'))
+      .catch(() => {})
+  }
+
+  await fs.rm(workDir, { recursive: true, force: true })
+  return freed - (await directorySize(outputDir))
 }
 
 async function directorySize(dir: string): Promise<number> {
@@ -126,8 +153,8 @@ async function finalize(asin: string): Promise<{ freed: number }> {
     throw new Error(`${check.reason} — nothing deleted`)
   }
 
-  const freed = await cleanUp(asin)
-  console.log(`  done — freed ${mb(freed)}`)
+  const freed = await moveResultsAndCleanUp(asin)
+  console.log(`  done — ${bookOutputDir(asin)}, freed ${mb(freed)}`)
   return { freed }
 }
 
@@ -152,7 +179,8 @@ for (const [i, asin] of asins.entries()) {
 }
 
 console.log(
-  `\n${asins.length - failures} of ${asins.length} book(s) finalized, ${mb(freedTotal)} freed`
+  `\n${asins.length - failures} of ${asins.length} book(s) finalized, ` +
+    `${mb(freedTotal)} freed\nResults in ${getOutputDir()}`
 )
 
 if (failures) {

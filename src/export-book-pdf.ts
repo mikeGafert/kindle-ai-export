@@ -8,10 +8,11 @@ import PDFDocument from 'pdfkit'
 
 import type { BookMetadata, ContentChunk } from './types'
 import { getChapters } from './book-structure'
+import { bookWorkDir } from './paths'
 import { assert, getEnv, parseAsins } from './utils'
 
 export async function exportPdf(asin: string): Promise<string> {
-  const outDir = path.join('out', asin)
+  const outDir = bookWorkDir(asin)
 
   const content = JSON.parse(
     await fsp.readFile(path.join(outDir, 'content.json'), 'utf8')

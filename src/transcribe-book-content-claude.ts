@@ -7,6 +7,7 @@ import Anthropic from '@anthropic-ai/sdk'
 import pMap from 'p-map'
 
 import type { BookMetadata, ContentChunk, TocItem } from './types'
+import { bookWorkDir } from './paths'
 import { ensureConfig } from './setup'
 import {
   assert,
@@ -49,7 +50,7 @@ Do not include any additional text, descriptions, or punctuation. Ignore any emb
 If the page contains no readable text at all, output exactly ${blankMarker} and nothing else.`
 
 async function main(asin: string) {
-  const outDir = path.join('out', asin)
+  const outDir = bookWorkDir(asin)
   const metadataPath = path.join(outDir, 'metadata.json')
   const metadata = await readJsonFile<BookMetadata>(metadataPath).catch(() => {
     throw new Error(
@@ -225,7 +226,7 @@ let failures = 0
  * same pages twice.
  */
 async function isAlreadyTranscribed(asin: string): Promise<boolean> {
-  const outDir = path.join('out', asin)
+  const outDir = bookWorkDir(asin)
   const metadata = await tryReadJsonFile<BookMetadata>(
     path.join(outDir, 'metadata.json')
   )

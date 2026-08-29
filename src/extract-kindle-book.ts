@@ -20,6 +20,7 @@ import type {
   BookMetadata,
   TocItem
 } from './types'
+import { bookWorkDir } from './paths'
 import { parsePageNav, parseTocItems } from './playwright-utils'
 import { ensureConfig } from './setup'
 import {
@@ -55,7 +56,7 @@ async function main(asin: string) {
   assert(amazonPassword, 'AMAZON_PASSWORD is required')
   const asinL = asin.toLowerCase()
 
-  const outDir = path.join('out', asin)
+  const outDir = bookWorkDir(asin)
   const userDataDir = path.join(outDir, 'data')
   const pageScreenshotsDir = path.join(outDir, 'pages')
   const metadataPath = path.join(outDir, 'metadata.json')
@@ -1176,7 +1177,7 @@ let failures = 0
  */
 async function isAlreadyExtracted(asin: string): Promise<boolean> {
   const metadata = await tryReadJsonFile<BookMetadata>(
-    path.join('out', asin, 'metadata.json')
+    path.join(bookWorkDir(asin), 'metadata.json')
   )
   if (!metadata?.pages?.length || !metadata.complete) return false
 

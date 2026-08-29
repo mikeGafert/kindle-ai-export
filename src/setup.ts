@@ -14,6 +14,7 @@ export type SettingKey =
   | 'ASIN'
   | 'MISTRAL_API_KEY'
   | 'ANTHROPIC_API_KEY'
+  | 'OUTPUT_DIR'
 
 type Setting = {
   key: SettingKey
@@ -65,6 +66,12 @@ const settings: Record<SettingKey, Setting> = {
     label: 'Mistral API key',
     hint: 'from https://console.mistral.ai/api-keys — billing must be enabled',
     secret: true
+  },
+  OUTPUT_DIR: {
+    key: 'OUTPUT_DIR',
+    label: 'Where should the finished books go',
+    hint: 'leave empty for the default in your documents folder',
+    optional: true
   },
   ANTHROPIC_API_KEY: {
     key: 'ANTHROPIC_API_KEY',

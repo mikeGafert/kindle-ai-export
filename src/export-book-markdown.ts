@@ -4,13 +4,14 @@ import fs from 'node:fs/promises'
 import path from 'node:path'
 
 import type { BookMetadata, ContentChunk } from './types'
+import { bookWorkDir } from './paths'
 import { assert, getEnv, readJsonFile } from './utils'
 
 async function main() {
   const asin = getEnv('ASIN')
   assert(asin, 'ASIN is required')
 
-  const outDir = path.join('out', asin)
+  const outDir = bookWorkDir(asin)
 
   const content = await readJsonFile<ContentChunk[]>(
     path.join(outDir, 'content.json')

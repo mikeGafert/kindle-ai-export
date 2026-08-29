@@ -11,6 +11,7 @@ import pMap from 'p-map'
 import { UnrealSpeechClient } from 'unrealspeech-api'
 
 import type { BookMetadata, ContentChunk } from './types'
+import { bookWorkDir } from './paths'
 import {
   assert,
   ffmpegOnProgress,
@@ -32,7 +33,7 @@ async function main() {
   // In preview mode, we only export the first page of the book.
   const isPreview = getEnv('AUDIOBOOK_PREVIEW') === 'true'
 
-  const outDir = path.join('out', asin)
+  const outDir = bookWorkDir(asin)
   const audioOutDir = path.join(outDir, isPreview ? 'audio-previews' : 'audio')
   await fs.mkdir(audioOutDir, { recursive: true })
 

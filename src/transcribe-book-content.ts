@@ -7,6 +7,7 @@ import { Mistral } from '@mistralai/mistralai'
 import pMap from 'p-map'
 
 import type { BookMetadata, ContentChunk, PageChunk, TocItem } from './types'
+import { bookWorkDir } from './paths'
 import { ensureConfig } from './setup'
 import {
   assert,
@@ -281,7 +282,7 @@ function stripMarkdown(text: string): string {
 }
 
 async function main(asin: string) {
-  const outDir = path.join('out', asin)
+  const outDir = bookWorkDir(asin)
   const metadataPath = path.join(outDir, 'metadata.json')
   const metadata = await readJsonFile<BookMetadata>(metadataPath).catch(() => {
     throw new Error(
@@ -385,7 +386,7 @@ async function main(asin: string) {
  * same pages twice.
  */
 async function isAlreadyTranscribed(asin: string): Promise<boolean> {
-  const outDir = path.join('out', asin)
+  const outDir = bookWorkDir(asin)
   const metadata = await tryReadJsonFile<BookMetadata>(
     path.join(outDir, 'metadata.json')
   )
