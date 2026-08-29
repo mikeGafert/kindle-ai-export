@@ -19,7 +19,8 @@
     "test:format": "prettier --check \"**/*.{js,ts,tsx}\"",
     "test:lint": "eslint .",
     "test:typecheck": "tsc --noEmit",
-    "prepare": "simple-git-hooks"
+    "prepare": "simple-git-hooks",
+    "test:unit": "vitest run"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.121.0",

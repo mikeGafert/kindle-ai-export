@@ -41,13 +41,7 @@ export function getChapters(
       : toPositionAnchors(metadata, content)
 
   if (anchors.length < 2) {
-    return [
-      {
-        label: metadata.meta?.title ?? 'Book',
-        depth: 0,
-        text: joinPages(content)
-      }
-    ]
+    return [singleChapter(metadata, content)]
   }
 
   const chapters: Chapter[] = []
@@ -77,15 +71,23 @@ export function getChapters(
     chapters.unshift({ label: 'Beginn', depth: 0, text: preamble })
   }
 
-  return chapters.length
-    ? chapters
-    : [
-        {
-          label: metadata.meta?.title ?? 'Book',
-          depth: 0,
-          text: joinPages(content)
-        }
-      ]
+  return chapters.length ? chapters : [singleChapter(metadata, content)]
+}
+
+/**
+ * The whole book as one chapter, used when the TOC gives us nothing to split
+ * on. Still strips a repeated title, same as a real chapter would.
+ */
+function singleChapter(
+  metadata: BookMetadata,
+  content: ContentChunk[]
+): Chapter {
+  const label = metadata.meta?.title ?? 'Book'
+  return {
+    label,
+    depth: 0,
+    text: stripLeadingHeading(joinPages(content), label)
+  }
 }
 
 /**
