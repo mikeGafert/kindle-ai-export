@@ -250,7 +250,9 @@ function stripMarkdown(text: string): string {
           .filter(Boolean)
           .join(' ')
       )
-      // Heading, quote and list markers.
+      // Heading, quote and list markers — including a bare '#' on its own line,
+      // which the OCR emits for a decorative separator.
+      .replaceAll(/^\s{0,3}#{1,6}\s*$/gm, '')
       .replaceAll(/^\s{0,3}#{1,6}\s+/gm, '')
       .replaceAll(/^\s{0,3}>\s?/gm, '')
       // Emphasis around whole words, keeping the words.
@@ -265,6 +267,10 @@ function stripMarkdown(text: string): string {
       .replaceAll('&quot;', '"')
       .replaceAll(/&#39;|&apos;/g, "'")
       .replaceAll('&nbsp;', ' ')
+      // The OCR occasionally inserts a space before closing punctuation
+      // (»Nirgendwo «). Note » is the *opening* quote in German and keeps its
+      // leading space — only « closes.
+      .replaceAll(/ +([,.;:!?«])/g, '$1')
       // Collapse the blank lines the removals leave behind.
       .replaceAll(/\n{3,}/g, '\n\n')
       .trim()
