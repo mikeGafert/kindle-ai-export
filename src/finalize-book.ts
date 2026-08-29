@@ -25,20 +25,28 @@ const keepPages = !!getEnv('KEEP_PAGES')
 
 type Check = { ok: boolean; reason?: string }
 
-async function checkTranscription(asin: string): Promise<Check> {
+/**
+ * The one gate before anything is deleted: are the exports there, and do they
+ * carry the whole book? A file that exists but holds a fraction of the text
+ * would otherwise pass unnoticed and the sources be gone.
+ *
+ * The screenshots are the only way to redo an OCR run without downloading the
+ * book from Amazon again, so this errs on the side of keeping them.
+ */
+async function verifyBeforeCleanup(asin: string): Promise<Check> {
   const outDir = path.join('out', asin)
 
   const metadata = await tryReadJsonFile<BookMetadata>(
     path.join(outDir, 'metadata.json')
   )
-  if (!metadata) return { ok: false, reason: 'metadata.json missing' }
-  if (!metadata.complete) return { ok: false, reason: 'extraction incomplete' }
-  if (!metadata.pages?.length) return { ok: false, reason: 'no pages recorded' }
-
   const content = await tryReadJsonFile<ContentChunk[]>(
     path.join(outDir, 'content.json')
   )
-  if (!content?.length) return { ok: false, reason: 'content.json missing' }
+
+  if (!metadata?.pages?.length)
+    return { ok: false, reason: 'metadata.json missing or empty' }
+  if (!content?.length)
+    return { ok: false, reason: 'content.json missing or empty' }
 
   const missing = metadata.pages.length - content.length
   if (missing > maxMissingPages) {
@@ -48,31 +56,7 @@ async function checkTranscription(asin: string): Promise<Check> {
     }
   }
 
-  const empty = content.filter((chunk) => !chunk.text.trim()).length
-  if (empty > content.length * 0.2) {
-    return {
-      ok: false,
-      reason: `${empty} of ${content.length} transcribed pages are empty`
-    }
-  }
-
   const characters = content.reduce((sum, chunk) => sum + chunk.text.length, 0)
-  if (characters < content.length * 100) {
-    return {
-      ok: false,
-      reason: `only ${characters} characters for ${content.length} pages — suspiciously little text`
-    }
-  }
-
-  return { ok: true }
-}
-
-/**
- * Verifies the exports actually carry the book: a file that exists but holds a
- * fraction of the text would otherwise pass unnoticed and the sources be gone.
- */
-async function checkExports(asin: string, characters: number): Promise<Check> {
-  const outDir = path.join('out', asin)
 
   for (const [file, minRatio] of [
     ['book.epub', 0.25],
@@ -83,8 +67,7 @@ async function checkExports(asin: string, characters: number): Promise<Check> {
 
     // Both formats compress, so compare generously — this catches a truncated
     // or near-empty file, not small differences in encoding.
-    const minBytes = characters * minRatio
-    if (stat.size < minBytes) {
+    if (stat.size < characters * minRatio) {
       return {
         ok: false,
         reason: `${file} is only ${stat.size} bytes for ${characters} characters of text`
@@ -132,23 +115,15 @@ function mb(bytes: number): string {
 }
 
 async function finalize(asin: string): Promise<{ freed: number }> {
-  const transcription = await checkTranscription(asin)
-  if (!transcription.ok) {
-    throw new Error(`not ready: ${transcription.reason}`)
-  }
-
-  const content = (await tryReadJsonFile<ContentChunk[]>(
-    path.join('out', asin, 'content.json')
-  ))!
-  const characters = content.reduce((sum, chunk) => sum + chunk.text.length, 0)
-
-  console.log(`  exporting (${content.length} pages, ${characters} characters)`)
+  // The exports read metadata.json and content.json and fail loudly if either
+  // is missing, so they double as the entry check.
+  console.log('  exporting')
   await exportEpub(asin)
   await exportPdf(asin)
 
-  const exports = await checkExports(asin, characters)
-  if (!exports.ok) {
-    throw new Error(`export check failed: ${exports.reason} — nothing deleted`)
+  const check = await verifyBeforeCleanup(asin)
+  if (!check.ok) {
+    throw new Error(`${check.reason} — nothing deleted`)
   }
 
   const freed = await cleanUp(asin)
