@@ -24,7 +24,8 @@
     "start": "tsx src/run-all.ts",
     "extract": "tsx src/extract-kindle-book.ts",
     "transcribe": "tsx src/transcribe-book-content.ts",
-    "finalize": "tsx src/finalize-book.ts"
+    "finalize": "tsx src/finalize-book.ts",
+    "copy-to-reader": "tsx src/copy-to-reader.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.121.0",
