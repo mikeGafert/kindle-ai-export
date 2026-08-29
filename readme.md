@@ -42,13 +42,13 @@
 
 ## Intro
 
-This project makes it easy to export the contents of any ebook in your Kindle library as text, PDF, EPUB, or as a custom, AI-narrated audiobook. It only requires a valid Amazon Kindle account and an OpenAI API key.
+This project makes it easy to export the contents of any ebook in your Kindle library as text, PDF, EPUB, or as a custom, AI-narrated audiobook. It only requires a valid Amazon Kindle account and a Mistral API key.
 
 _You must own the ebook on Kindle for this project to work._
 
 ### How does it work?
 
-It works by logging into your [Kindle web reader](https://read.amazon.com) account using [Playwright](https://playwright.dev), exporting each page of a book as a PNG image, and then using a vLLM (defaulting to `gpt-4.1-mini`) to transcribe the text from each page to text. Once we have the raw book contents and metadata, then it's easy to convert it to PDF, EPUB, etc. 🔥
+It works by logging into your [Kindle web reader](https://read.amazon.com) account using [Playwright](https://playwright.dev), exporting each page of a book as a PNG image, and then running OCR over each page (Mistral OCR) to turn it into text. Once we have the raw book contents and metadata, then it's easy to convert it to PDF, EPUB, etc. 🔥
 
 This [example](./examples/B0819W19WD) uses the first page of the scifi book [Revelation Space](https://www.amazon.com/gp/product/B0819W19WD?ref_=dbs_m_mng_rwt_calw_tkin_0&storeType=ebooks) by [Alastair Reynolds](https://www.goodreads.com/author/show/51204.Alastair_Reynolds):
 
@@ -80,7 +80,7 @@ This [example](./examples/B0819W19WD) uses the first page of the scifi book [Rev
     </tr>
     <tr>
       <td>
-        We then convert each page's screenshot into text using one of OpenAI's vLLMs (<strong>gpt-4.1-mini</strong>.
+        We then convert each page's screenshot into text with Mistral OCR.
       </td>
       <td>
         <p>Mantell Sector, North Nekhebet, Resurgam, Delta Pavonis system, 2551</p>
@@ -161,131 +161,84 @@ I also created an [OSS TypeScript client for the unofficial Kindle API](https://
 
 ## Usage
 
-Make sure you have `node >= 18` and [pnpm](https://pnpm.io) installed.
+### Requirements
 
-1. Clone this repo
-2. Run `pnpm install`
-3. Set up environment variables ([details](#setup-env-vars))
-4. Run `src/extract-kindle-book.ts` ([details](#extract-kindle-book))
-5. Run `src/transcribe-book-content.ts` ([details](#transcribe-book-content))
-6. (Optional) Run `src/export-book-pdf.ts` ([details](#optional-export-book-as-pdf))
-7. (Optional) Export book as EPUB ([details](#optional-export-book-as-epub))
-8. (Optional) Run `src/export-book-markdown.ts` ([details](#optional-export-book-as-markdown))
-9. (Optional) Run `src/export-book-audio.ts` ([details](#optional-export-book-as-ai-narrated-audiobook-))
-
-### Setup Env Vars
-
-> **Beim ersten Start fragt das Skript selbst.** Läuft `extract-kindle-book.ts`
-> oder `transcribe-book-content.ts` in einem Terminal und fehlen Zugangsdaten,
-> werden sie abgefragt und in `.env` (Modus 600, git-ignored) gespeichert.
-> Passwörter und Schlüssel werden maskiert eingegeben. Das 2FA-Secret ist
-> optional — ohne es fragt der Login bei Bedarf nach dem Code aus der App.
-> In einer nicht-interaktiven Umgebung wird nichts gefragt, sondern gemeldet,
-> was fehlt. Die folgenden Variablen lassen sich auch von Hand setzen:
-
-
-Set up these required environment variables in a local `.env`:
+- **Node.js 20+** and **pnpm** (`corepack enable && corepack prepare pnpm@10.18.3 --activate`)
+- **Google Chrome** (or another Chromium build). The reader is driven in a
+  _visible_ browser window, so you need a desktop session — this does not run
+  headless on a server without `Xvfb`.
+- A **Mistral API key** with billing enabled — https://console.mistral.ai.
+  Batch jobs must be unlocked separately there; without that the run falls back
+  to single requests at twice the price per page.
+- You must **own** the books on Kindle.
 
 ```sh
-AMAZON_EMAIL=
-AMAZON_PASSWORD=
-ASIN=
-
-OPENAI_API_KEY=
+pnpm install
+npx patchright install chrome   # skip if Chrome is already installed
 ```
 
-You can find your book's [ASIN](https://en.wikipedia.org/wiki/Amazon_Standard_Identification_Number) (Amazon ID) by visiting [read.amazon.com](https://read.amazon.com) and clicking on the book you want to export. The resulting URL will look like `https://read.amazon.com/?asin=B0819W19WD&ref_=kwl_kr_iv_rec_2`, with `B0819W19WD` being the ASIN in this case.
-
-### Extract Kindle Book
+### The whole thing in one command
 
 ```sh
-npx tsx src/extract-kindle-book.ts
+pnpm start
 ```
 
-- _(This takes a few minutes to run)_
-- This logs into your [Amazon Kindle web reader](https://read.amazon.com) using headless Chrome ([Playwright](https://playwright.dev)). It can be pretty fun to watch it run, so feel free to tweak the script to use `headless: false` to watch it do its thing.
-- If your account requires 2FA, the terminal will request a code from you before proceeding.
-- It uses a persistent browser session, so you should only have to auth once.
-- Once logged in, it navigates to the web reader page for a specific book (`https://read.amazon.com/?asin=${ASIN}`).
-- Then it changes the reader settings to use a single column and a sans-serif font.
-- Then it extracts the book's table of contents.
-- Then it goes through each page of the book's main contents and saves a PNG screenshot of the rendered content to `out/${asin}/pages/${index}-${page}.png`.
-- Example: [examples/B0819W19WD/pages](./examples/B0819W19WD/pages)
-- Lastly, it resets the reader to the original position so your reading progress isn't affected.
-- It also records some JSON metadata with the TOC, book title, author, product image, etc to `out/${asin}/metadata.json`.
-- Example: [examples/B0819W19WD/metadata.json](./examples/B0819W19WD/metadata.json)
+On the first run it asks for whatever is missing — Amazon login, ASINs, the
+Mistral key — and stores it in `.env` (mode 600, git-ignored). Passwords and
+keys are masked while typing. Then it runs all three steps in order:
 
-> [!NOTE]
-> I'm pretty sure Kindle's web reader uses WebGL at least in part to render the page contents, because the content pages failed to generate when running this on a VM ([Browserbase](https://www.browserbase.com)). So if you're getting blank or invalid page screenshots, that may be the reason.
+1. **extract** — opens each book in the reader and captures every page as an image
+2. **transcribe** — OCR through Mistral, producing `content.json`
+3. **finalize** — builds EPUB and PDF, verifies them, then deletes the working files
 
-### Transcribe Book Content
+Each step can also be run on its own (`pnpm extract`, `pnpm transcribe`,
+`pnpm finalize`) and each of them skips books that are already done, so an
+interrupted run is resumed by simply starting it again.
+
+### Where things end up
+
+Two directories, deliberately separate:
+
+|              | Contents                                                 | Default                             |
+| ------------ | -------------------------------------------------------- | ----------------------------------- |
+| `OUTPUT_DIR` | `book.epub`, `book.pdf`, `content.json`, `metadata.json` | `<documents>/Kindle-Export/<ASIN>/` |
+| `WORK_DIR`   | page images, browser profile — hundreds of MB per book   | platform app-data directory         |
+
+The working files are kept out of the documents folder on purpose: it is often
+cloud-synced, and a browser profile has no business being replicated to every
+device. Both can be set in `.env`. They must not overlap — finalizing deletes
+the working directory, which would otherwise take the finished book with it.
+
+### Finding an ASIN
+
+Open the book in https://read.amazon.com and read it from the address bar:
+`read.amazon.com/?asin=B07QLY87NH`. Several books at once:
 
 ```sh
-npx tsx src/transcribe-book-content.ts
+ASIN=B07QLY87NH,B00957T6X6
 ```
 
-- _(This takes a few minutes to run)_
-- This takes each of the page screenshots and runs them through a vLLM (defaulting to `gpt-4.1-mini`) to extract the raw text content from each page of the book.
-- It then stitches these text chunks together, taking into account chapter boundaries.
-- The result is stored as JSON to `out/${asin}/content.json`.
-- Example: [examples/B0819W19WD/content.json](./examples/B0819W19WD/content.json)
+### Optional settings
 
-### (Optional) Export Book as PDF
+| Variable                                 | Effect                                                                                      |
+| ---------------------------------------- | ------------------------------------------------------------------------------------------- |
+| `MISTRAL_OCR_MODEL`                      | OCR model, default `mistral-ocr-3`                                                          |
+| `MISTRAL_MODE`                           | `auto` (default), `batch` or `sync`                                                         |
+| `MISTRAL_CONCURRENCY`                    | parallel requests in sync mode, default 5                                                   |
+| `TRANSCRIBE_LIMIT`                       | only transcribe the first N pages — a cheap trial                                           |
+| `AMAZON_TOTP_SECRET`                     | 2FA secret; without it you are asked for the code                                           |
+| `CHROME_EXECUTABLE_PATH`                 | path to a browser if Chrome is not installed                                                |
+| `PDF_FONT`                               | `.ttf` for the PDF; without a Unicode font, characters outside Western European are dropped |
+| `KEEP_PAGES`                             | keep the page images instead of deleting them                                               |
+| `FORCE_REEXTRACT` / `FORCE_RETRANSCRIBE` | redo a book that is already done                                                            |
+| `MAX_MISSING_PAGES`                      | how many pages may be missing before a book counts as unfinished (default 5)                |
 
-```sh
-npx tsx src/export-book-pdf.ts
-```
+### Audiobooks
 
-- _(This should run instantly)_
-- It uses [PDFKit](https://github.com/foliojs/pdfkit) under the hood.
-- It includes a valid table of contents for easy navigation.
-- The result is stored to `out/${asin}/book.pdf`.
-- Example: [examples/B0819W19WD/book-preview.pdf](./examples/B0819W19WD/book-preview.pdf)
-
-### (Optional) Export Book as EPUB
-
-If you want, you can use [Calibre](https://calibre-ebook.com) to convert your book's PDF to the EPUB ebook format. On a Mac, you can install `calibre` using Homebrew (`brew install --cask calibre`).
-
-```sh
-# replace B0819W19WD with your book's ASIN
-ebook-convert out/B0819W19WD/book.pdf out/B0819W19WD/book.epub --enable-heuristics
-```
-
-_([ebook-convert docs](https://manual.calibre-ebook.com/generated/en/ebook-convert.html))_
-
-### (Optional) Export Book as Markdown
-
-```sh
-npx tsx src/export-book-markdown.ts
-```
-
-- _(This should run instantly)_
-- The result is stored to `out/${asin}/book.md`.
-- Example: [examples/B0819W19WD/book-preview.md](./examples/B0819W19WD/book-preview.md)
-
-### (Optional) Export Book as AI-Narrated Audiobook 🔥
-
-```sh
-npx tsx src/export-book-audio.ts
-```
-
-- _This takes a few minutes to run._
-- We support two TTS engines: [OpenAI TTS](https://platform.openai.com/docs/models/tts) and [Unreal Speech TTS](https://unrealspeech.com).
-  - To use OpenAI, set `TTS_ENGINE=openai` (the default)
-  - To use Unreal Speech, set `TTS_ENGINE=unrealspeech` and `UNREAL_SPEECH_API_KEY=(your-api-key)`
-  - OpenAI is higher quality but more expensive; Unreal Speech is medium quality and cheaper
-  - To set the OpenAI voice, use `OPENAI_TTS_VOICE=onyx` (defaults to `alloy`)
-  - To set the Unreal Speech voice, use `UNREAL_SPEECH_VOICE='Scarlett'` (defaults to `Scarlett`)
-  - OpenAI TTS for a full novel (~1M tokens) is approximately **$30** (1.5GB MP3 ~21 hours long)
-  - Unreal Speech TTS for a full novel (~1M tokens) is approximately **$2** (1.7GB MP3 ~23 hours long)
-  - It should be pretty easy to support other TTS providers in the future.
-- The TTS will be broken up into reasonly sized chunks and stored in `mp3` files under `out/${asin}/audio/<tts-engine-hash>/`.
-  - The `<tts-engine-hash>` directory is based on the TTS engine settings and book contents
-- After generating audio for each chunk, we use `ffmpeg` to concat them together.
-  - You need to have `ffmpeg` installed locally for this to work
-  - On Mac, `brew install ffmpeg` ([or install with more options](https://stackoverflow.com/a/55108365/2353599))
-- The resulting audiobook is stored to `out/${asin}/audio/<tts-engine-hash>/audiobook.mp3`.
-- Examples: [examples/B0819W19WD/audio-previews](./examples/B0819W19WD/audio-previews)
+`src/export-book-audio.ts` is inherited from upstream and still uses OpenAI or
+UnrealSpeech for text-to-speech. It is not part of `pnpm start`: text-to-speech
+is billed per character, so a shelf of books costs orders of magnitude more than
+the OCR, and it would read every OCR error aloud. Needs `ffmpeg` on the PATH.
 
 ## Disclaimer
 
@@ -305,9 +258,21 @@ If you want to explore other ways of exporting your personal ebooks from Kindle,
 
 Compared with these approaches, the approach used by this project is much easier to automate. It also retains metadata about Kindle's original sync positions which is very useful for cases where you'd like to interoperate with Kindle. E.g., be able to jump from reading a Kindle book to listening to an AI-generated narration on a walk and then jumping back to reading the Kindle book and having the sync positions "just work".
 
-The main downside is that it's possible for some transcription errors to occur during the `image ⇒ text` step - which uses a multimodal LLM and is not 100% deterministic. In my testing, I've been remarkably surprised with how accurate the results are, but there are occasional issues mostly with differentiating whitespace between paragraphs versus soft section breaks. Note that both Calibre and Epubor also use heuristics to deal with things like spacing and dashes used by wordwrap, so the fidelity of the conversions will not be 100% one-to-one with the original Kindle version in any case.
+The `image ⇒ text` step is OCR, not a language model reading the page. That
+distinction matters: a language model _understands_ what it reads and will
+occasionally smooth or invent text — in testing, one produced a chapter heading
+that was not on the page at all, twice in a row and differently each time. An
+OCR engine only recognises glyphs, so its mistakes look like mistakes.
 
-The other downside is that the **LLM costs add up to a dollars per book using `gpt-4.1-mini`**. With LLM costs constantly decreasing and local vLLMs, this cost per book should be free or almost free soon. The screenshots are also really good quality with no extra content, so you could swap any other OCR solution for the vLLM-based `image ⇒ text` quite easily.
+What it does get wrong is elaborate display typography: a decorated title page
+may come out as `65 war einmal` instead of `Es war einmal`. Body text in a
+normal typeface is transcribed faithfully, including old spellings and
+typographic quotation marks, which a language model tends to "correct".
+
+Cost is no longer a real factor: Mistral OCR in batch mode runs at roughly one
+US dollar per 1000 pages, so a shelf of 22 books — about 15,000 pages — comes to
+around $15. `src/transcribe-book-content-claude.ts` keeps the original
+vision-model route for comparison; it costs about seven times as much.
 
 ### How is the accuracy?
 
