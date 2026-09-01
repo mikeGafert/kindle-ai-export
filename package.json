@@ -79,5 +79,10 @@
       "prettier --ignore-unknown --write",
       "eslint --cache --fix"
     ]
+  },
+  "pnpm": {
+    "overrides": {
+      "tar": ">=7.5.19"
+    }
   }
 }
