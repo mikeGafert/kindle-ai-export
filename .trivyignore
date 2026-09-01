@@ -1,0 +1,3 @@
+# Trivy-Ausnahmen fuer den Dependency-Scan (.github/workflows/security.yml).
+# Jede Zeile mit Grund und Datum; wo moeglich mit Ablauf: CVE-ID exp:YYYY-MM-DD
+# Stand 2026-09-01: keine Ausnahmen noetig.

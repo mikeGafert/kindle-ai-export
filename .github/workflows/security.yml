@@ -1,0 +1,66 @@
+name: Security-Scan
+
+# Dieses Repo hat bewusst kein Deploy — geprueft werden deshalb nicht Images, sondern
+# die Abhaengigkeiten selbst (Lockfile) und versehentlich eingecheckte Geheimnisse.
+# Muster: ~/.claude/standards/ci-cd-pipeline.md
+#
+# CRITICAL mit verfuegbarem Fix bricht ab, HIGH laeuft als Bericht mit. Ohne
+# ignore-unfixed wuerde ein beliebiges nicht behebbares Finding den Lauf dauerhaft rot
+# faerben — und ein Gate, das immer rot ist, sieht irgendwann niemand mehr an.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    - cron: '0 5 * * 1'  # montags 05:00 UTC — faengt neu veroeffentlichte CVEs
+  workflow_dispatch:
+
+concurrency:
+  group: security-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  scan:
+    name: Abhaengigkeiten und Geheimnisse
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Trivy — CRITICAL bricht ab
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          scan-type: fs
+          scan-ref: .
+          scanners: vuln
+          severity: CRITICAL
+          ignore-unfixed: true
+          exit-code: '1'
+          format: table
+          trivyignores: .trivyignore
+
+      - name: Trivy — HIGH als Bericht
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          scan-type: fs
+          scan-ref: .
+          scanners: vuln
+          severity: HIGH
+          ignore-unfixed: true
+          exit-code: '0'
+          format: table
+          trivyignores: .trivyignore
+
+      # Eingecheckte Zugangsdaten sind in mehreren Repos schon aufgetaucht — hier laeuft
+      # der Scan als Bericht mit, damit er nicht wegen Fehlalarmen abgeschaltet wird.
+      - name: Trivy — eingecheckte Geheimnisse (Bericht)
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          scan-type: fs
+          scan-ref: .
+          scanners: secret
+          exit-code: '0'
+          format: table
